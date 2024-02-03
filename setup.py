@@ -44,6 +44,7 @@ setup(
     ],
     extras_require={
         "dev": [
+            "black==24.1.1"
             "pytest==8.0.0",
             "transformers==4.37.2",
             "pillow==10.2.0",
