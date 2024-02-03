@@ -8,7 +8,7 @@
 
 ## Installation Instructions
 
-### On Mac
+### On MacOs
 ```bash
 brew install graphviz
 pip install torchtrail

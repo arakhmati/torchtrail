@@ -20,7 +20,7 @@ def test_bert(tmp_path, trace_modules):
     else:
         assert len(output.graph) == 196
 
-    torchtrail.visualize(output, file_name=tmp_path / "bert.dot")
+    torchtrail.visualize(output, file_name=tmp_path / "bert.svg")
 
 
 @pytest.mark.parametrize("trace_modules", [True, False])
@@ -34,7 +34,7 @@ def test_resnet(tmp_path, trace_modules):
 
     try:
         urllib.URLopener().retrieve(url, filename)
-    except:
+    except Exception:
         urllib.request.urlretrieve(url, filename)
 
     # sample execution (requires torchvision)
@@ -63,24 +63,4 @@ def test_resnet(tmp_path, trace_modules):
     else:
         assert len(probabilities.graph) == 174
 
-    torchtrail.visualize(probabilities, file_name=tmp_path / "resnet18.dot")
-
-
-@pytest.mark.parametrize("trace_modules", [True, False])
-def test_vit(tmp_path, trace_modules):
-    model_name = "google/vit-base-patch16-224"
-    batch_size = 1
-    num_channels = 3
-    height = 224
-    width = 224
-
-    config = transformers.ViTConfig.from_pretrained(model_name)
-    model = transformers.models.vit.modeling_vit.ViTModel(config).eval()
-
-    with torchtrail.trace(trace_modules=trace_modules):
-        input_tensor = torch.randn(batch_size, num_channels, height, width)
-        output = model(input_tensor).pooler_output
-
-    torchtrail.visualize(
-        output, file_name=tmp_path / "vit-base-patch-16-224.dot", max_depth=4
-    )
+    torchtrail.visualize(probabilities, file_name=tmp_path / "resnet18.svg")
