@@ -20,7 +20,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+
 from collections.abc import Iterable
+import pathlib
+from typing import Optional
 
 import graphviz
 import networkx
@@ -278,22 +281,27 @@ def visualize_graph(
     graphviz_graph=None,
     visualize_node=default_visualize_node,
     visualize_edge=default_visualize_edge,
-    timeout=1,
-    file_name=None,
-    format="svg",
+    file_name: Optional[pathlib.Path] = None,
 ) -> None:
     if graphviz_graph is None:
         graphviz_graph = graphviz.Digraph()
 
-    for node in topological_traversal(graph):
+    for node in graph:
         visualize_node(graphviz_graph, graph, node)
 
-    for node in topological_traversal(graph):
+    for node in graph:
         for edge in graph.in_edges(node, data=True, keys=True):
             visualize_edge(graphviz_graph, graph, edge)
 
     if file_name is not None:
-        graphviz_graph.render(file_name, format=format)
+        if not isinstance(file_name, pathlib.Path):
+            raise TypeError(f"file_name must be a pathlib.Path, not {type(file_name)}")
+        if file_name.suffix != ".svg":
+            raise ValueError(
+                f"file_name must have a .svg suffix, not {file_name.suffix}"
+            )
+        format = file_name.suffix[1:]
+        graphviz_graph.render(file_name.with_suffix(""), format=format)
 
     return graphviz_graph
 
