@@ -36,6 +36,7 @@ from torchtrail.multidigraph import (
     compose_all,
     merge_graphs,
     visualize_graph,
+    topological_traversal,
 )
 
 
@@ -92,14 +93,17 @@ class TorchTensor(PClass):
     tensor = field(mandatory=True)
 
     def __repr__(self):
-        return "TorchTensor"
+        return "torch.Tensor"
 
 
 class TorchParameter(PClass):
     parameter = field(mandatory=True)
 
     def __repr__(self):
-        return "TorchParameter"
+        output = "torch.nn.Parameter"
+        if hasattr(self.parameter, "torchtrail_name"):
+            output = f"{output}\n{self.parameter.torchtrail_name}"
+        return output
 
 
 class TorchFunction(PClass):
@@ -116,12 +120,15 @@ class TorchModule(PClass):
     outputs: list[TracedTorchTensor] = field(mandatory=True)
 
     def __repr__(self):
-        return type(self.module).__name__
+        output = type(self.module).__name__
+        if hasattr(self.module, "torchtrail_name"):
+            return f"{output}\n{self.module.torchtrail_name}"
+        return output
 
 
 class TorchModuleInput(PClass):
     def __repr__(self):
-        return "TorchModuleInput"
+        return "torch.Tensor"
 
 
 UNIQUE_ID = 0
@@ -320,6 +327,17 @@ def convert_to_module_args_and_kwargs(*args, **kwargs) -> Any:
 
 def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) -> Any:
 
+    if not hasattr(module, "torchtrail_name"):
+        module.torchtrail_name = ""
+
+    for name, child in module.named_modules():
+        if not hasattr(child, "torchtrail_name"):
+            child.torchtrail_name = name
+
+    for name, parameter in module.named_parameters():
+        if not hasattr(parameter, "torchtrail_name"):
+            parameter.torchtrail_name = name
+
     args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
 
     module_args, module_kwargs = convert_to_module_args_and_kwargs(*args, **kwargs)
@@ -378,18 +396,26 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
         arg for arg in kwargs.values() if isinstance(arg, TracedTorchTensor)
     ]
 
-    node_name = f"{module.__class__.__name__}_{get_unique_id()}"
+    node_name = f"{module.torchtrail_name}_{get_unique_id()}"
     node = Node(name=node_name)
+
+    graph = merge_graphs(*((tensor.graph, tensor.node) for tensor in input_tensors))
 
     def create_output_tensor(
         output_tensor: torch.Tensor, output_index
     ) -> TracedTorchTensor:
-        graph = merge_graphs(*((tensor.graph, tensor.node) for tensor in input_tensors))
+        nonlocal graph
+        if node in graph:
+            shapes = graph.nodes[node]["shapes"] + (tuple(output_tensor.shape),)
+            dtypes = graph.nodes[node]["dtypes"] + (output_tensor.dtype,)
+        else:
+            shapes = (tuple(output_tensor.shape),)
+            dtypes = (output_tensor.dtype,)
         graph = graph.add_node(
             node,
             operation=operation,
-            shapes=(tuple(output_tensor.shape),),
-            dtypes=(output_tensor.dtype,),
+            shapes=shapes,
+            dtypes=dtypes,
         )
         for input_index, tensor in enumerate(input_tensors):
             graph = graph.add_edge(
