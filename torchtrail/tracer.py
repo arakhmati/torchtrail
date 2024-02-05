@@ -22,10 +22,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Union, Tuple
-
-import dataclasses
 from contextlib import contextmanager
+import dataclasses
+import inspect
+from typing import Any, Callable, Optional, Union, Tuple
 
 import graphviz
 import torch
@@ -127,8 +127,10 @@ class TorchModule(PClass):
 
 
 class TorchModuleInput(PClass):
+    name: str = field(mandatory=True)
+
     def __repr__(self):
-        return "torch.Tensor: Module Input"
+        return f"TorchModuleInput\n{self.name}"
 
 
 UNIQUE_ID = 0
@@ -299,29 +301,31 @@ def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-def create_module_input(tensor: torch.Tensor) -> TracedTorchTensor:
+def create_module_input(name, tensor: torch.Tensor) -> TracedTorchTensor:
     node_name = f"module_input_{get_unique_id()}"
     node = Node(name=node_name)
     graph = MultiDiGraph().add_node(
         node,
-        operation=TorchModuleInput(),
+        operation=TorchModuleInput(name=name),
         shapes=(tuple(tensor.shape),),
         dtypes=(tensor.dtype,),
     )
     return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
 
 
-def convert_to_module_args_and_kwargs(*args, **kwargs) -> Any:
-    def preprocess_arg(arg: Any) -> Any:
+def convert_to_module_args_and_kwargs(signature, *args, **kwargs) -> Any:
+
+    def preprocess_arg(name: str, arg: Any) -> Any:
         if isinstance(arg, TracedTorchTensor):
-            return create_module_input(arg)
+            return create_module_input(name, arg)
         elif isinstance(arg, torch.nn.Parameter):
-            return create_module_input(arg)
+            raise ValueError("Module parameters are not supported")
         else:
             return arg
 
-    args = [preprocess_arg(arg) for arg in args]
-    kwargs = {name: preprocess_arg(arg) for name, arg in kwargs.items()}
+    arg_names = signature.args[1:]
+    args = [preprocess_arg(name, arg) for name, arg in zip(arg_names, args)]
+    kwargs = {name: preprocess_arg(name, arg) for name, arg in kwargs.items()}
     return args, kwargs
 
 
@@ -340,7 +344,10 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
 
     args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
 
-    module_args, module_kwargs = convert_to_module_args_and_kwargs(*args, **kwargs)
+    module_args, module_kwargs = convert_to_module_args_and_kwargs(
+        inspect.getfullargspec(module.forward), *args, **kwargs
+    )
+
     module_return_value = TORCH_NN_MODULE_CALL(module, *module_args, **module_kwargs)
 
     module_output_tensors = []
