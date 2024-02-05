@@ -604,7 +604,7 @@ def _visualize(
             if isinstance(operation, (TorchTensor, TorchParameter, TorchModuleInput)):
                 shape = "box"
             else:
-                shape = "circle"
+                shape = "oval"
 
             shapes = attributes["shapes"]
             dtypes = attributes["dtypes"]
