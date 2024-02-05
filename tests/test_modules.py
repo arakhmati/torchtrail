@@ -6,25 +6,26 @@ import transformers
 import torchtrail
 
 
-@pytest.mark.parametrize("trace_modules", [True, False])
-def test_bert(tmp_path, trace_modules):
+@pytest.mark.parametrize("show_modules", [True, False])
+def test_bert(tmp_path, show_modules):
     model_name = "google/bert_uncased_L-4_H-256_A-4"
     model = transformers.BertModel.from_pretrained(model_name).eval()
 
-    with torchtrail.trace(trace_modules=trace_modules):
+    with torchtrail.trace():
         input_tensor = torch.randint(0, model.config.vocab_size, (1, 64))
         output = model(input_tensor).last_hidden_state
 
-    if trace_modules:
-        assert len(output.graph) == 2
-    else:
-        assert len(output.graph) == 196
+    assert len(output.graph) == 2
+    if not show_modules:
+        assert len(torchtrail.flatten_graph(output.graph)) == 205
 
-    torchtrail.visualize(output, file_name=tmp_path / "bert.svg")
+    torchtrail.visualize(
+        output, show_modules=show_modules, file_name=tmp_path / "bert.svg"
+    )
 
 
-@pytest.mark.parametrize("trace_modules", [True, False])
-def test_resnet(tmp_path, trace_modules):
+@pytest.mark.parametrize("show_modules", [True, False])
+def test_resnet(tmp_path, show_modules):
     model = torch.hub.load("pytorch/vision:v0.10.0", "resnet18", pretrained=True).eval()
 
     import urllib
@@ -52,15 +53,16 @@ def test_resnet(tmp_path, trace_modules):
     )
     input_tensor = preprocess(input_image).unsqueeze(0)
 
-    with torchtrail.trace(trace_modules=trace_modules):
+    with torchtrail.trace():
         input_tensor = torch.as_tensor(input_tensor)
         output = model(input_tensor)
 
     probabilities = torch.nn.functional.softmax(output[0], dim=0)
 
-    if trace_modules:
-        assert len(probabilities.graph) == 4
-    else:
-        assert len(probabilities.graph) == 174
+    assert len(output.graph) == 2
+    if not show_modules:
+        assert len(torchtrail.flatten_graph(output.graph)) == 172
 
-    torchtrail.visualize(probabilities, file_name=tmp_path / "resnet18.svg")
+    torchtrail.visualize(
+        probabilities, show_modules=show_modules, file_name=tmp_path / "resnet18.svg"
+    )
