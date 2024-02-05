@@ -128,7 +128,7 @@ class TorchModule(PClass):
 
 class TorchModuleInput(PClass):
     def __repr__(self):
-        return "torch.Tensor"
+        return "torch.Tensor: Module Input"
 
 
 UNIQUE_ID = 0
@@ -186,6 +186,19 @@ def preprocess_args_and_kwargs(*args, **kwargs) -> Any:
     return args, kwargs
 
 
+def get_input_tensors(object):
+    input_tensors = []
+    if isinstance(object, TracedTorchTensor):
+        input_tensors.append(object)
+    elif isinstance(object, (list, tuple)):
+        for element in object:
+            input_tensors += get_input_tensors(element)
+    elif isinstance(object, dict):
+        for value in object.values():
+            input_tensors += get_input_tensors(value)
+    return input_tensors
+
+
 class LazyTensor:
     def __init__(self, graph: MultiDiGraph, node: Node, output_index: int):
         self.graph: MultiDiGraph = graph
@@ -193,7 +206,7 @@ class LazyTensor:
         self.output_index: int = output_index
 
     @classmethod
-    def from_traced_tesnor(cls, traced_tesnor: TracedTorchTensor):
+    def from_traced_tensor(cls, traced_tesnor: TracedTorchTensor):
         return cls(traced_tesnor.graph, traced_tesnor.node, traced_tesnor.output_index)
 
     @property
@@ -242,19 +255,6 @@ class TracedTorchTensor(torch.Tensor):
             kwargs = {}
 
         args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
-
-        def get_input_tensors(object):
-            input_tensors = []
-            if isinstance(object, TracedTorchTensor):
-                input_tensors.append(object)
-            elif isinstance(object, (list, tuple)):
-                for element in object:
-                    input_tensors += get_input_tensors(element)
-            elif isinstance(object, dict):
-                for value in object.values():
-                    input_tensors += get_input_tensors(value)
-            return input_tensors
-
         input_tensors = get_input_tensors(args) + get_input_tensors(kwargs)
 
         # This is necessary for torch version < 1.10
@@ -341,133 +341,115 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
     args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
 
     module_args, module_kwargs = convert_to_module_args_and_kwargs(*args, **kwargs)
-    output = TORCH_NN_MODULE_CALL(module, *module_args, **module_kwargs)
+    module_return_value = TORCH_NN_MODULE_CALL(module, *module_args, **module_kwargs)
 
-    module_outputs = []
-    if isinstance(output, torch.Tensor) and not isinstance(output, TracedTorchTensor):
-        raise ValueError(f"Expected torch.Tensor but got {type(output)}")
-    elif isinstance(output, tuple):
+    module_output_tensors = []
+    if isinstance(module_return_value, torch.Tensor) and not isinstance(
+        module_return_value, TracedTorchTensor
+    ):
+        raise ValueError(f"Expected torch.Tensor but got {type(module_return_value)}")
+    elif isinstance(module_return_value, tuple):
         # TODO: support nested tuples
-        tensors = []
-        for element in output:
+        for element in module_return_value:
             if element is None:
                 continue
             if isinstance(element, TracedTorchTensor):
-                tensors.append(element)
+                module_output_tensors.append(element)
                 continue
             raise ValueError(f"Unexpected element in a tuple: {type(element)}")
-        module_outputs = tensors
-    elif dataclasses.is_dataclass(output):
+    elif dataclasses.is_dataclass(module_return_value):
         # TODO: support nested dataclasses
         output_index = 0
-        for class_field in dataclasses.fields(output):
-            value = getattr(output, class_field.name)
+        for class_field in dataclasses.fields(module_return_value):
+            value = getattr(module_return_value, class_field.name)
             if isinstance(value, TracedTorchTensor):
-                module_outputs.append(value)
+                module_output_tensors.append(value)
     else:
-        if not isinstance(output, TracedTorchTensor):
-            raise ValueError(f"Expected TracedTorchTensor but got {type(output)}")
-        module_outputs.append(output)
+        if not isinstance(module_return_value, TracedTorchTensor):
+            raise ValueError(
+                f"Expected TracedTorchTensor but got {type(module_return_value)}"
+            )
+        module_output_tensors.append(module_return_value)
 
-    module_inputs = [
-        LazyTensor.from_traced_tesnor(arg)
-        for arg in module_args
-        if isinstance(arg, TracedTorchTensor)
-    ]
-    module_inputs += [
-        LazyTensor.from_traced_tesnor(arg)
-        for arg in module_kwargs.values()
-        if isinstance(arg, TracedTorchTensor)
-    ]
+    def create_module(module_input_tensors, module_output_tensors):
+        module_inputs = [
+            LazyTensor.from_traced_tensor(tensor) for tensor in module_input_tensors
+        ]
+        module_outputs = [
+            LazyTensor.from_traced_tensor(tensor) for tensor in module_output_tensors
+        ]
+        module_graph = compose_all(
+            *[tensor.graph for tensor in module_inputs + module_outputs]
+        )
+        operation = TorchModule(
+            module=module,
+            graph=module_graph,
+            inputs=module_inputs,
+            outputs=module_outputs,
+        )
+        return operation
 
-    module_outputs = [
-        LazyTensor.from_traced_tesnor(tensor) for tensor in module_outputs
-    ]
-    module_graph = compose_all(
-        *[tensor.graph for tensor in module_inputs + module_outputs]
+    module_input_tensors = get_input_tensors(module_args) + get_input_tensors(
+        module_kwargs
     )
-
-    operation = TorchModule(
-        module=module, graph=module_graph, inputs=module_inputs, outputs=module_outputs
-    )
-
-    input_tensors = [arg for arg in args if isinstance(arg, TracedTorchTensor)]
-    input_tensors += [
-        arg for arg in kwargs.values() if isinstance(arg, TracedTorchTensor)
-    ]
-
+    operation = create_module(module_input_tensors, module_output_tensors)
     node_name = f"{module.torchtrail_name}_{get_unique_id()}"
     node = Node(name=node_name)
 
+    input_tensors = get_input_tensors(args) + get_input_tensors(kwargs)
     graph = merge_graphs(*((tensor.graph, tensor.node) for tensor in input_tensors))
 
-    def create_output_tensor(
-        output_tensor: torch.Tensor, output_index
-    ) -> TracedTorchTensor:
-        nonlocal graph
-        if node in graph:
-            shapes = graph.nodes[node]["shapes"] + (tuple(output_tensor.shape),)
-            dtypes = graph.nodes[node]["dtypes"] + (output_tensor.dtype,)
-        else:
-            shapes = (tuple(output_tensor.shape),)
-            dtypes = (output_tensor.dtype,)
-        graph = graph.add_node(
-            node,
-            operation=operation,
-            shapes=shapes,
-            dtypes=dtypes,
-        )
-        for input_index, tensor in enumerate(input_tensors):
-            graph = graph.add_edge(
-                tensor.node,
-                node,
-                source_output_index=tensor.output_index,
-                sink_input_index=input_index,
-            )
-        output_tensor = TracedTorchTensor(
-            output_tensor, graph=graph, node=node, output_index=output_index
-        )
-        return output_tensor
+    shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
+    dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
+    graph = graph.add_node(
+        node,
+        operation=operation,
+        shapes=shapes,
+        dtypes=dtypes,
+    )
 
-    if isinstance(output, torch.Tensor) and not isinstance(output, TracedTorchTensor):
-        raise ValueError(f"Expected torch.Tensor but got {type(output)}")
-    elif isinstance(output, tuple):
-        # TODO: support nested tuples
-        tensors = []
-        for element in output:
-            if element is None:
-                continue
-            if isinstance(element, TracedTorchTensor):
-                tensors.append(element)
-                continue
-            raise ValueError(f"Unexpected element in a tuple: {type(element)}")
-        return tuple(
-            create_output_tensor(tensor, output_index)
-            for output_index, tensor in enumerate(tensors)
+    for input_index, tensor in enumerate(input_tensors):
+        graph = graph.add_edge(
+            tensor.node,
+            node,
+            source_output_index=tensor.output_index,
+            sink_input_index=input_index,
         )
-    elif dataclasses.is_dataclass(output):
+
+    output_tensors = [
+        TracedTorchTensor(tensor, graph=graph, node=node, output_index=output_index)
+        for output_index, tensor in enumerate(module_output_tensors)
+    ]
+    if isinstance(module_return_value, torch.Tensor) and not isinstance(
+        module_return_value, TracedTorchTensor
+    ):
+        raise ValueError(f"Expected torch.Tensor but got {type(module_return_value)}")
+    elif isinstance(module_return_value, tuple):
+        return tuple(output_tensors)
+    elif dataclasses.is_dataclass(module_return_value):
         # TODO: support nested dataclasses
         output_index = 0
         updated_fields = {}
-        for class_field in dataclasses.fields(output):
-            value = getattr(output, class_field.name)
+        for class_field in dataclasses.fields(module_return_value):
+            value = getattr(module_return_value, class_field.name)
             if isinstance(value, TracedTorchTensor):
-                value = create_output_tensor(value, output_index=output_index)
+                value = output_tensors[output_index]
                 output_index += 1
             updated_fields[class_field.name] = value
-        return type(output)(**updated_fields)
+        return type(module_return_value)(**updated_fields)
     else:
-        if not isinstance(output, TracedTorchTensor):
-            raise ValueError(f"Expected TracedTorchTensor but got {type(output)}")
-        return create_output_tensor(output, output_index=0)
+        if not isinstance(module_return_value, TracedTorchTensor):
+            raise ValueError(
+                f"Expected TracedTorchTensor but got {type(module_return_value)}"
+            )
+        return output_tensors[0]
 
 
 @contextmanager
-def trace(*, trace_modules=True):
+def trace():
 
     # Monkey-patch module __call__ and torch creation ops
-    if trace_modules:
-        setattr(torch.nn.Module, "__call__", traced_module_forward)
+    setattr(torch.nn.Module, "__call__", traced_module_forward)
 
     for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
         setattr(torch, name, wrap_create_function(op))
@@ -475,8 +457,7 @@ def trace(*, trace_modules=True):
     yield
 
     # Reset monkey-patched module __call__ and torch creation ops
-    if trace_modules:
-        setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
+    setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
 
     for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
         setattr(torch, name, op)
@@ -670,16 +651,115 @@ def _visualize(
     )
 
 
+def get_source(graph, node, source_output_index):
+    operation = graph.nodes[node]["operation"]
+
+    if not isinstance(operation, TorchModule):
+        return node
+
+    module = operation
+    module_graph = module.graph
+    module_node = module.outputs[source_output_index].node
+    return get_source(
+        module_graph,
+        module_node,
+        source_output_index,
+    )
+
+
+def get_sink(graph, node, sink_input_index):
+    operation = graph.nodes[node]["operation"]
+
+    if not isinstance(operation, TorchModule):
+        return node
+
+    module = operation
+    module_graph = module.graph
+    module_node = module.inputs[sink_input_index].node
+    return get_sink(
+        module_graph,
+        module_node,
+        sink_input_index,
+    )
+
+
+def _flatten_graph(
+    graph,
+    *,
+    new_graph=None,
+    level=0,
+) -> MultiDiGraph:
+
+    if new_graph is None:
+        new_graph = MultiDiGraph()
+
+    for node in topological_traversal(graph):
+        operation = graph.nodes[node]["operation"]
+        if isinstance(operation, TorchModule):
+            module_graph = _flatten_graph(
+                operation.graph, new_graph=new_graph, level=level + 1
+            )
+            new_graph = compose_all(new_graph, module_graph)
+        else:
+            new_graph = new_graph.add_node(
+                node,
+                **graph.nodes[node],
+            )
+
+    for node in topological_traversal(graph):
+        operation = graph.nodes[node]["operation"]
+        for source, sink, edge_data in graph.in_edges(node, data=True):
+            source = get_source(graph, source, edge_data["source_output_index"])
+            sink = get_sink(graph, sink, edge_data["sink_input_index"])
+            if source not in new_graph or sink not in new_graph:
+                continue
+            new_graph = new_graph.add_edge(
+                source,
+                sink,
+                **edge_data,
+            )
+
+    return new_graph
+
+
+def flatten_graph(graph) -> MultiDiGraph:
+    graph = _flatten_graph(graph)
+
+    for node in topological_traversal(graph):
+        operation = graph.nodes[node]["operation"]
+        if isinstance(operation, TorchModuleInput):
+            ((predecessor, _, data),) = list(graph.in_edges(node, data=True))
+            for _, sink, edge_data in graph.out_edges(node, data=True):
+                edge_data = edge_data.set(
+                    "source_output_index", data["source_output_index"]
+                )
+                graph = graph.add_edge(
+                    predecessor,
+                    sink,
+                    **edge_data,
+                )
+            graph = graph.remove_node(node)
+    return graph
+
+
 def visualize(
     value: Union[TracedTorchTensor, Tuple[TracedTorchTensor, ...]],
     *,
+    show_modules: bool = True,
     max_depth: Optional[int] = None,
     file_name: Optional[str] = None,
 ) -> graphviz.Digraph:
+
+    if not show_modules and max_depth is not None:
+        raise ValueError("max_depth is not supported with show_modules=True")
+
     if isinstance(value, TracedTorchTensor):
         graph = value.graph
     elif isinstance(value, tuple):
         graph = compose_all(*[tensor.graph for tensor in value])
     else:
         raise ValueError(f"Unexpected input type: {type(value)}")
+
+    if not show_modules:
+        graph = flatten_graph(graph)
     return _visualize(graph, max_depth=max_depth, file_name=file_name)

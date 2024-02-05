@@ -166,6 +166,17 @@ class MultiDiGraph(PClass):
             new_graph = new_graph.add_edge(source, sink, key, **data, **attr)
         return new_graph
 
+    def remove_node(self, node):
+        for source, sink in self.edges(node):
+            self = self.remove_edge(source, sink)
+
+        _node = self._node.remove(node)
+        _succ = self._succ
+        _pred = self._pred
+
+        new_graph = self.set(_node=_node, _pred=_pred, _succ=_succ)
+        return new_graph
+
     def remove_edge(self, source, sink, key=None):
         def _remove_edge(node_to_neighbors, from_node, to_node, edge_key):
             neighbors = node_to_neighbors.get(from_node, pmap())
