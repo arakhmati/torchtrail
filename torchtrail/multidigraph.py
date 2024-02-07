@@ -23,8 +23,9 @@
 
 from collections.abc import Iterable
 import pathlib
-from typing import Optional
+from typing import Optional, Union
 
+from loguru import logger
 import graphviz
 import networkx
 from pyrsistent import PClass, field, pmap_field, PMap, pmap
@@ -292,7 +293,7 @@ def visualize_graph(
     graphviz_graph=None,
     visualize_node=default_visualize_node,
     visualize_edge=default_visualize_edge,
-    file_name: Optional[pathlib.Path] = None,
+    file_name: Optional[Union[str, pathlib.Path]] = None,
 ) -> None:
     if graphviz_graph is None:
         graphviz_graph = graphviz.Digraph()
@@ -305,14 +306,14 @@ def visualize_graph(
             visualize_edge(graphviz_graph, graph, edge)
 
     if file_name is not None:
-        if not isinstance(file_name, pathlib.Path):
-            raise TypeError(f"file_name must be a pathlib.Path, not {type(file_name)}")
+        file_name = pathlib.Path(file_name)
         if file_name.suffix != ".svg":
             raise ValueError(
                 f"file_name must have a .svg suffix, not {file_name.suffix}"
             )
         format = file_name.suffix[1:]
         graphviz_graph.render(file_name.with_suffix(""), format=format)
+        logger.info(f'Graph visualization saved to "{file_name}"')
 
     return graphviz_graph
 

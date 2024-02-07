@@ -30,12 +30,13 @@ import torchtrail
 with torchtrail.trace():
     tensor = torch.rand(1, 64)
     tensor = torch.exp(tensor)
-torchtrail.visualize(tensor)
+torchtrail.visualize(tensor, file_name="exp.svg")
 ```
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/exp.svg)
 
 
 ### Tracing a module
+
 ```python
 import torch
 import transformers
@@ -51,29 +52,29 @@ with torchtrail.trace():
     input_tensor = torch.randint(0, model.config.vocab_size, (1, 64))
     output = model(input_tensor).last_hidden_state
 
-torchtrail.visualize(output)
-```
-
-![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert.svg)
-
-The graph of the module can be visualized differently using `max_depth` argument
-
-```python
-torchtrail.visualize(output, max_depth=1)
+torchtrail.visualize(output, max_depth=1, file_name="bert_max_depth_1.svg")
 ```
 
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert_max_depth_1.svg)
 
 ```python
-torchtrail.visualize(output, max_depth=2)
+torchtrail.visualize(output, max_depth=2, file_name="bert_max_depth_2.svg")
 ```
 
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert_max_depth_2.svg)
 
-Alternatively, visualization of the modules can be turned off using `show_modules=False`
+The graph of the full module can be visualized by omitting `max_depth` argument
 
 ```python
-torchtrail.visualize(output, show_modules=False)
+torchtrail.visualize(output, file_name="bert.svg")
+```
+
+![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert.svg)
+
+Alternatively, visualization of the modules can be turned off completely using `show_modules=False`
+
+```python
+torchtrail.visualize(output, show_modules=False, file_name="bert_show_modules_False.svg")
 ```
 
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert_show_modules_False.svg)

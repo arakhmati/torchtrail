@@ -25,6 +25,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 import dataclasses
 import inspect
+import math
+import pathlib
+import time
 from typing import Any, Callable, Optional, Union, Tuple
 
 import graphviz
@@ -102,7 +105,7 @@ class TorchParameter(PClass):
     def __repr__(self):
         output = "torch.nn.Parameter"
         if hasattr(self.parameter, "torchtrail_name"):
-            output = f"{output}\n{self.parameter.torchtrail_name}"
+            output = f"{output}\nname: {self.parameter.torchtrail_name}"
         return output
 
 
@@ -121,8 +124,8 @@ class TorchModule(PClass):
 
     def __repr__(self):
         output = type(self.module).__name__
-        if hasattr(self.module, "torchtrail_name"):
-            return f"{output}\n{self.module.torchtrail_name}"
+        if self.module.torchtrail_name != "":
+            return f"{output}\nname: {self.module.torchtrail_name}"
         return output
 
 
@@ -130,7 +133,7 @@ class TorchModuleInput(PClass):
     name: str = field(mandatory=True)
 
     def __repr__(self):
-        return f"TorchModuleInput\n{self.name}"
+        return f"TorchModuleInput\nname: {self.name}"
 
 
 class LazyTensor:
@@ -318,9 +321,12 @@ class TracedTorchTensor(torch.Tensor):
         args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
         input_tensors = get_input_tensors(args) + get_input_tensors(kwargs)
 
+        start_time = time.time()
         function_return_value = super().__torch_function__(
             function, types, args, kwargs
         )
+        end_time = time.time()
+        duration = end_time - start_time
 
         output_tensors = preprocess_return_value(function_return_value)
         if not output_tensors:
@@ -337,6 +343,7 @@ class TracedTorchTensor(torch.Tensor):
             operation=TorchFunction(function=function),
             shapes=shapes,
             dtypes=dtypes,
+            duration=duration,
         )
         for input_index, tensor in enumerate(input_tensors):
             graph = graph.add_edge(
@@ -414,9 +421,6 @@ def create_module(module, module_input_tensors, module_output_tensors):
 
 def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) -> Any:
 
-    if not hasattr(module, "torchtrail_name"):
-        module.torchtrail_name = ""
-
     for name, child in module.named_modules():
         if not hasattr(child, "torchtrail_name"):
             child.torchtrail_name = name
@@ -431,7 +435,10 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
         inspect.getfullargspec(module.forward), *args, **kwargs
     )
 
+    start_time = time.time()
     module_return_value = TORCH_NN_MODULE_CALL(module, *module_args, **module_kwargs)
+    end_time = time.time()
+    duration = end_time - start_time
 
     module_input_tensors = get_input_tensors(module_args) + get_input_tensors(
         module_kwargs
@@ -452,6 +459,7 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
         operation=operation,
         shapes=shapes,
         dtypes=dtypes,
+        duration=duration,
     )
 
     for input_index, tensor in enumerate(input_tensors):
@@ -565,11 +573,13 @@ def _visualize(
         graph_attr = {"ordering": "in", "rankdir": "TB"}
         node_attr = {
             "style": "filled",
+            "border": "1",
             "fontsize": "10",
             "ranksep": "0.1",
             "height": "0.2",
             "fontname": "Linux libertine",
             "margin": "0",
+            "shape": "box",
         }
         edge_attr = {
             "fontsize": "10",
@@ -585,6 +595,77 @@ def _visualize(
         attributes = graph.nodes[node]
         operation = attributes["operation"]
         name = f"{level_prefix}{node.name}"
+
+        input_tensors = []
+        for source, _, edge_data in graph.in_edges(node, data=True):
+            input_shape = graph.nodes[source]["shapes"][
+                edge_data["source_output_index"]
+            ]
+            input_dtype = graph.nodes[source]["dtypes"][
+                edge_data["source_output_index"]
+            ]
+            input_tensors.append((input_shape, input_dtype))
+
+        output_shapes = attributes["shapes"]
+        output_dtypes = attributes["dtypes"]
+        output_tensors = tuple(
+            (shape, dtype) for shape, dtype in zip(output_shapes, output_dtypes)
+        )
+        label = f"{operation}"
+
+        duration = attributes.get("duration", None)
+        if duration is not None:
+            label = f"{label}\nduration: {duration:.9f}s"
+
+        num_columns = max(len(input_tensors), len(output_tensors))
+
+        table = label.replace("\n", "<BR/>")
+        table = f"""<
+                <TABLE BORDER="{0}" CELLBORDER="{1}"
+                CELLSPACING="{1}" CELLPADDING="{1}">
+                <TR>
+                    <TD ROWSPAN="{2 if input_tensors else 1}">{table}</TD>
+                """
+
+        def compute_even_column_sizes(num_columns, num_tensors):
+            if num_tensors == 0:
+                return []
+            column_size = math.ceil(num_columns // num_tensors)
+            column_sizes = []
+            remaining = num_columns
+            for _ in range(num_tensors):
+                if remaining > column_size:
+                    column_sizes.append(column_size)
+                else:
+                    column_sizes.append(remaining)
+                remaining -= column_size
+            return column_sizes
+
+        input_column_sizes = compute_even_column_sizes(num_columns, len(input_tensors))
+        for index, (shape, dtype) in enumerate(input_tensors):
+            column_size = input_column_sizes[index]
+            table = (
+                table
+                + f"""
+                    <TD COLSPAN="{column_size}">Input: {index}<BR/>{shape}<BR/>{dtype}</TD>
+                """
+            )
+        table += """
+                </TR>
+                <TR>
+                """
+        output_column_sizes = compute_even_column_sizes(
+            num_columns, len(output_tensors)
+        )
+        for index, (shape, dtype) in enumerate(output_tensors):
+            column_size = output_column_sizes[index]
+            table += f"""
+                    <TD COLSPAN="{column_size}">Output: {index}<BR/>{shape}<BR/>{dtype}</TD>
+                """
+        table += f"""
+                </TR>
+                </TABLE>>"""
+
         if isinstance(operation, TorchModule):
 
             color = LEVEL_COLORS[level % len(LEVEL_COLORS)]
@@ -594,7 +675,7 @@ def _visualize(
                         fontcolor="black",
                         bgcolor=color,
                         cluster="true",
-                        label=f"{operation}",
+                        label=label,
                         rankdir="TB",
                         shape="hexagon",
                     )
@@ -607,33 +688,19 @@ def _visualize(
                         level_prefix=f"{name}/",
                     )
             else:
-                shapes = attributes["shapes"]
-                dtypes = attributes["dtypes"]
-                shapes = shapes[0] if len(shapes) == 1 else shapes
-                dtypes = dtypes[0] if len(dtypes) == 1 else dtypes
                 graphviz_graph.node(
                     name,
-                    label=f"{operation}\n{shapes}\n{dtypes}",
+                    label=table,
                     fontcolor="black",
                     fillcolor=color,
-                    shape="hexagon",
                 )
 
         else:
-            if isinstance(operation, (TorchTensor, TorchParameter, TorchModuleInput)):
-                shape = "box"
-            else:
-                shape = "oval"
 
-            shapes = attributes["shapes"]
-            dtypes = attributes["dtypes"]
-            shapes = shapes[0] if len(shapes) == 1 else shapes
-            dtypes = dtypes[0] if len(dtypes) == 1 else dtypes
             graphviz_graph.node(
                 name,
-                label=f"{operation}\n{shapes}\n{dtypes}",
-                fillcolor="white",
-                shape=shape,
+                label=table,
+                fillcolor="#DCDCDC",
             )
 
     def visualize_edge(graphviz_graph, graph, edge):
@@ -773,7 +840,7 @@ def visualize(
     *,
     show_modules: bool = True,
     max_depth: Optional[int] = None,
-    file_name: Optional[str] = None,
+    file_name: Optional[Union[str, pathlib.Path]] = None,
 ) -> graphviz.Digraph:
 
     if not show_modules and max_depth is not None:

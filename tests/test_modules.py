@@ -66,3 +66,24 @@ def test_resnet(tmp_path, show_modules):
     torchtrail.visualize(
         probabilities, show_modules=show_modules, file_name=tmp_path / "resnet18.svg"
     )
+
+
+def test_module_list():
+
+    class Module(torch.nn.Module):
+
+        def __init__(self):
+            super(Module, self).__init__()
+            self.layers = torch.nn.ModuleList([torch.nn.Conv2d(3, 3, 3)] * 4)
+
+        def forward(self, x):
+            for module in self.layers:
+                x = module(x)
+            return x
+
+    module = Module()
+
+    with torchtrail.trace():
+        output = module(torch.rand(1, 3, 100, 100))
+
+    torchtrail.visualize(output)
