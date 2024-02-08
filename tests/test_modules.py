@@ -13,15 +13,13 @@ def test_bert(tmp_path, show_modules):
 
     with torchtrail.trace():
         input_tensor = torch.randint(0, model.config.vocab_size, (1, 64))
-        output = model(input_tensor).last_hidden_state
-
-    assert len(output.graph) == 2
-    if not show_modules:
-        assert len(torchtrail.flatten_graph(output.graph)) == 205
+        output_tensor = model(input_tensor)
 
     torchtrail.visualize(
-        output, show_modules=show_modules, file_name=tmp_path / "bert.svg"
+        output_tensor, show_modules=show_modules, file_name=tmp_path / "bert.svg"
     )
+    assert len(torchtrail.get_graph(output_tensor)) == 2
+    assert len(torchtrail.get_graph(output_tensor, flatten=True)) == 205
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -55,17 +53,14 @@ def test_resnet(tmp_path, show_modules):
 
     with torchtrail.trace():
         input_tensor = torch.as_tensor(input_tensor)
-        output = model(input_tensor)
-
-    probabilities = torch.nn.functional.softmax(output[0], dim=0)
-
-    assert len(output.graph) == 2
-    if not show_modules:
-        assert len(torchtrail.flatten_graph(output.graph)) == 172
+        output_tensor = model(input_tensor)
+        output_tensor = torch.nn.functional.softmax(output_tensor[0], dim=0)
 
     torchtrail.visualize(
-        probabilities, show_modules=show_modules, file_name=tmp_path / "resnet18.svg"
+        output_tensor, show_modules=show_modules, file_name=tmp_path / "resnet18.svg"
     )
+    assert len(torchtrail.get_graph(output_tensor)) == 4
+    assert len(torchtrail.get_graph(output_tensor, flatten=True)) == 174
 
 
 def test_module_list():
@@ -87,3 +82,5 @@ def test_module_list():
         output = module(torch.rand(1, 3, 100, 100))
 
     torchtrail.visualize(output)
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) == 13

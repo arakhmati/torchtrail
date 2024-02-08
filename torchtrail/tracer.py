@@ -26,6 +26,7 @@ from contextlib import contextmanager
 import dataclasses
 import inspect
 import math
+from loguru import logger
 import pathlib
 import time
 from typing import Any, Callable, Optional, Union, Tuple
@@ -34,13 +35,7 @@ import graphviz
 import torch
 from pyrsistent import PClass, field
 
-from torchtrail.multidigraph import (
-    MultiDiGraph,
-    compose_all,
-    merge_graphs,
-    visualize_graph,
-    topological_traversal,
-)
+from torchtrail import multidigraph
 
 
 TORCH_NN_MODULE_CALL = torch.nn.Module.__call__
@@ -93,7 +88,6 @@ class Node(PClass):
 
 
 class TorchTensor(PClass):
-    tensor = field(mandatory=True)
 
     def __repr__(self):
         return "torch.Tensor"
@@ -118,9 +112,9 @@ class TorchFunction(PClass):
 
 class TorchModule(PClass):
     module = field(mandatory=True)
-    graph: MultiDiGraph = field(mandatory=True)
-    inputs: list[TracedTorchTensor] = field(mandatory=True)
-    outputs: list[TracedTorchTensor] = field(mandatory=True)
+    graph: multidigraph.MultiDiGraph = field(mandatory=True)
+    inputs: list[TracedTensor] = field(mandatory=True)
+    outputs: list[TracedTensor] = field(mandatory=True)
 
     def __repr__(self):
         output = type(self.module).__name__
@@ -137,8 +131,8 @@ class TorchModuleInput(PClass):
 
 
 class LazyTensor:
-    def __init__(self, graph: MultiDiGraph, node: Node, output_index: int):
-        self.graph: MultiDiGraph = graph
+    def __init__(self, graph: multidigraph.MultiDiGraph, node: Node, output_index: int):
+        self.graph: multidigraph.MultiDiGraph = graph
         self.node: Node = node
         self.output_index: int = output_index
 
@@ -171,7 +165,7 @@ def create_input_tensor(
     if isinstance(tensor, torch.nn.Parameter):
         node_name = f"torch_parameter_{get_unique_id()}"
         node = Node(name=node_name)
-        graph = MultiDiGraph().add_node(
+        graph = multidigraph.MultiDiGraph().add_node(
             node,
             operation=TorchParameter(parameter=tensor),
             shapes=(tuple(tensor.shape),),
@@ -180,12 +174,12 @@ def create_input_tensor(
         return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
     elif isinstance(tensor, torch.Tensor):
         if function is None:
-            operation = TorchTensor(tensor=tensor)
+            operation = TorchTensor()
         else:
             operation = TorchFunction(function=function)
         node_name = f"torch_input_{get_unique_id()}"
         node = Node(name=node_name)
-        graph = MultiDiGraph().add_node(
+        graph = multidigraph.MultiDiGraph().add_node(
             node,
             operation=operation,
             shapes=(tuple(tensor.shape),),
@@ -193,7 +187,7 @@ def create_input_tensor(
         )
         return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
     else:
-        raise ValueError(f"Unknown input type: {type(tensor)}")
+        raise RuntimeError(f"Unknown input type: {type(tensor)}")
 
 
 def preprocess_args_and_kwargs(*args, **kwargs) -> Any:
@@ -212,7 +206,7 @@ def preprocess_args_and_kwargs(*args, **kwargs) -> Any:
 
 def get_input_tensors(object):
     input_tensors = []
-    if isinstance(object, TracedTorchTensor):
+    if isinstance(object, TracedTensor):
         input_tensors.append(object)
     elif isinstance(object, (list, tuple)):
         for element in object:
@@ -228,9 +222,9 @@ def preprocess_return_value(return_value):
     if isinstance(return_value, (int, torch.Size, torch.device, torch.dtype, str)):
         pass
     elif isinstance(return_value, torch.Tensor) and not isinstance(
-        return_value, TracedTorchTensor
+        return_value, TracedTensor
     ):
-        raise ValueError(f"Expected TracedTorchTensor but got torch.Tensor")
+        raise RuntimeError(f"Expected TracedTorchTensor but got torch.Tensor")
     elif isinstance(return_value, TracedTorchTensor):
         output_tensors.append(return_value)
     elif isinstance(return_value, (tuple, list)):
@@ -246,7 +240,7 @@ def preprocess_return_value(return_value):
     elif return_value is None:
         pass
     else:
-        raise ValueError(f"Unexpected type {type(return_value)}")
+        raise RuntimeError(f"Unexpected type {type(return_value)}")
     return output_tensors
 
 
@@ -254,10 +248,10 @@ def postprocess_return_value(return_value, output_tensors):
     if isinstance(return_value, (int, torch.Size, torch.device, torch.dtype, str)):
         return return_value
     elif isinstance(return_value, torch.Tensor) and not isinstance(
-        return_value, TracedTorchTensor
+        return_value, TracedTensor
     ):
-        raise ValueError(f"Expected TracedTorchTensor but got torch.Tensor")
-    elif isinstance(return_value, TracedTorchTensor):
+        raise RuntimeError(f"Expected TracedTensor but got torch.Tensor")
+    elif isinstance(return_value, TracedTensor):
         output_tensor, *_ = output_tensors
         output_tensors.pop(0)
         return output_tensor
@@ -282,12 +276,15 @@ def postprocess_return_value(return_value, output_tensors):
         return return_value
 
 
-class TracedTorchTensor(torch.Tensor):
+class TracedTensor: ...
+
+
+class TracedTorchTensor(torch.Tensor, TracedTensor):
     @staticmethod
     def __new__(
         cls: Any,
         tensor: Any,
-        graph: MultiDiGraph,
+        graph: multidigraph.MultiDiGraph,
         node: Node,
         output_index: int,
         *args: Any,
@@ -296,9 +293,14 @@ class TracedTorchTensor(torch.Tensor):
         return super().__new__(cls, tensor, *args, **kwargs)  # type: ignore[call-arg]
 
     def __init__(
-        self, tensor: Any, *, graph: MultiDiGraph, node: Node, output_index: int
+        self,
+        tensor: Any,
+        *,
+        graph: multidigraph.MultiDiGraph,
+        node: Node,
+        output_index: int,
     ):
-        self.graph: MultiDiGraph = graph
+        self.graph: multidigraph.MultiDiGraph = graph
         self.node: Node = node
         self.output_index: int = output_index
 
@@ -337,7 +339,9 @@ class TracedTorchTensor(torch.Tensor):
 
         node_name = f"{function.__name__}_{get_unique_id()}"
         node = Node(name=node_name)
-        graph = merge_graphs(*((tensor.graph, tensor.node) for tensor in input_tensors))
+        graph = multidigraph.merge_graphs(
+            *((tensor.graph, tensor.node) for tensor in input_tensors)
+        )
         graph = graph.add_node(
             node,
             operation=TorchFunction(function=function),
@@ -361,17 +365,17 @@ class TracedTorchTensor(torch.Tensor):
 
 
 def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
-    def wrapper(*args: Any, **kwargs: Any) -> TracedTorchTensor:
+    def wrapper(*args: Any, **kwargs: Any) -> TracedTensor:
         input_tensor = function(*args, **kwargs)
         return create_input_tensor(input_tensor, function)
 
     return wrapper
 
 
-def create_module_input(name, tensor: torch.Tensor) -> TracedTorchTensor:
+def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
     node_name = f"module_input_{get_unique_id()}"
     node = Node(name=node_name)
-    graph = MultiDiGraph().add_node(
+    graph = multidigraph.MultiDiGraph().add_node(
         node,
         operation=TorchModuleInput(name=name),
         shapes=(tuple(tensor.shape),),
@@ -383,10 +387,10 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTorchTensor:
 def convert_to_module_args_and_kwargs(signature, *args, **kwargs) -> Any:
 
     def preprocess_arg(name: str, arg: Any) -> Any:
-        if isinstance(arg, TracedTorchTensor):
+        if isinstance(arg, TracedTensor):
             return create_module_input(name, arg)
         elif isinstance(arg, torch.nn.Parameter):
-            raise ValueError("Module parameters are not supported")
+            raise RuntimeError("Module parameters are not supported")
         else:
             return arg
 
@@ -407,7 +411,7 @@ def create_module(module, module_input_tensors, module_output_tensors):
     module_outputs = [
         LazyTensor.from_traced_tensor(tensor) for tensor in module_output_tensors
     ]
-    module_graph = compose_all(
+    module_graph = multidigraph.compose_all(
         *[tensor.graph for tensor in module_inputs + module_outputs]
     )
     operation = TorchModule(
@@ -445,7 +449,9 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
     )
     module_output_tensors = preprocess_return_value(module_return_value)
     input_tensors = get_input_tensors(args) + get_input_tensors(kwargs)
-    graph = merge_graphs(*((tensor.graph, tensor.node) for tensor in input_tensors))
+    graph = multidigraph.merge_graphs(
+        *((tensor.graph, tensor.node) for tensor in input_tensors)
+    )
 
     shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
     dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
@@ -507,245 +513,11 @@ LEVEL_COLORS = [
 ]
 
 
-def get_source_name(graph, node, source_output_index, level, level_prefix, max_depth):
-    name = f"{level_prefix}{node.name}"
+def get_source(graph, node, source_output_index, level, max_depth=None):
     operation = graph.nodes[node]["operation"]
 
     if max_depth is not None and level + 1 == max_depth:
-        return name
-
-    if not isinstance(operation, TorchModule):
-        return name
-
-    module = operation
-    module_graph = module.graph
-    module_node = module.outputs[source_output_index].node
-    return get_source_name(
-        module_graph,
-        module_node,
-        source_output_index,
-        level + 1,
-        level_prefix=f"{name}/",
-        max_depth=max_depth,
-    )
-
-
-def get_sink_name(graph, node, sink_input_index, level, level_prefix, max_depth):
-    name = f"{level_prefix}{node.name}"
-    operation = graph.nodes[node]["operation"]
-
-    if max_depth is not None and level + 1 == max_depth:
-        return name
-
-    if not isinstance(operation, TorchModule):
-        return name
-
-    module = operation
-    module_graph = module.graph
-    module_node = module.inputs[sink_input_index].node
-    return get_sink_name(
-        module_graph,
-        module_node,
-        sink_input_index,
-        level + 1,
-        level_prefix=f"{name}/",
-        max_depth=max_depth,
-    )
-
-
-def _visualize(
-    graph,
-    *,
-    max_depth=None,
-    file_name=None,
-    graphviz_graph=None,
-    level=0,
-    level_prefix="",
-) -> graphviz.Digraph:
-
-    if max_depth is not None:
-        if max_depth < 1:
-            raise ValueError("max_depth must be greater than 0")
-        if level == max_depth:
-            return graphviz_graph
-
-    if graphviz_graph is None:
-        graph_attr = {"ordering": "in", "rankdir": "TB"}
-        node_attr = {
-            "style": "filled",
-            "border": "1",
-            "fontsize": "10",
-            "ranksep": "0.1",
-            "height": "0.2",
-            "fontname": "Linux libertine",
-            "margin": "0",
-            "shape": "box",
-        }
-        edge_attr = {
-            "fontsize": "10",
-        }
-        graphviz_graph = graphviz.Digraph(
-            engine="dot",
-            graph_attr=graph_attr,
-            node_attr=node_attr,
-            edge_attr=edge_attr,
-        )
-
-    def visualize_node(graphviz_graph, graph, node):
-        attributes = graph.nodes[node]
-        operation = attributes["operation"]
-        name = f"{level_prefix}{node.name}"
-
-        input_tensors = []
-        for source, _, edge_data in graph.in_edges(node, data=True):
-            input_shape = graph.nodes[source]["shapes"][
-                edge_data["source_output_index"]
-            ]
-            input_dtype = graph.nodes[source]["dtypes"][
-                edge_data["source_output_index"]
-            ]
-            input_tensors.append((input_shape, input_dtype))
-
-        output_shapes = attributes["shapes"]
-        output_dtypes = attributes["dtypes"]
-        output_tensors = tuple(
-            (shape, dtype) for shape, dtype in zip(output_shapes, output_dtypes)
-        )
-        label = f"{operation}"
-
-        duration = attributes.get("duration", None)
-        if duration is not None:
-            label = f"{label}\nduration: {duration:.9f}s"
-
-        num_columns = max(len(input_tensors), len(output_tensors))
-
-        table = label.replace("\n", "<BR/>")
-        table = f"""<
-                <TABLE BORDER="{0}" CELLBORDER="{1}"
-                CELLSPACING="{1}" CELLPADDING="{1}">
-                <TR>
-                    <TD ROWSPAN="{2 if input_tensors else 1}">{table}</TD>
-                """
-
-        def compute_even_column_sizes(num_columns, num_tensors):
-            if num_tensors == 0:
-                return []
-            column_size = math.ceil(num_columns // num_tensors)
-            column_sizes = []
-            remaining = num_columns
-            for _ in range(num_tensors):
-                if remaining > column_size:
-                    column_sizes.append(column_size)
-                else:
-                    column_sizes.append(remaining)
-                remaining -= column_size
-            return column_sizes
-
-        input_column_sizes = compute_even_column_sizes(num_columns, len(input_tensors))
-        for index, (shape, dtype) in enumerate(input_tensors):
-            column_size = input_column_sizes[index]
-            table = (
-                table
-                + f"""
-                    <TD COLSPAN="{column_size}">Input: {index}<BR/>{shape}<BR/>{dtype}</TD>
-                """
-            )
-        table += """
-                </TR>
-                <TR>
-                """
-        output_column_sizes = compute_even_column_sizes(
-            num_columns, len(output_tensors)
-        )
-        for index, (shape, dtype) in enumerate(output_tensors):
-            column_size = output_column_sizes[index]
-            table += f"""
-                    <TD COLSPAN="{column_size}">Output: {index}<BR/>{shape}<BR/>{dtype}</TD>
-                """
-        table += f"""
-                </TR>
-                </TABLE>>"""
-
-        if isinstance(operation, TorchModule):
-
-            color = LEVEL_COLORS[level % len(LEVEL_COLORS)]
-            if max_depth is None or level < max_depth - 1:
-                with graphviz_graph.subgraph(name=node.name) as cluster_graph:
-                    cluster_graph.attr(
-                        fontcolor="black",
-                        bgcolor=color,
-                        cluster="true",
-                        label=label,
-                        rankdir="TB",
-                        shape="hexagon",
-                    )
-                    cluster_graph.node_attr["style"] = "filled"
-                    _visualize(
-                        operation.graph,
-                        max_depth=max_depth,
-                        graphviz_graph=cluster_graph,
-                        level=level + 1,
-                        level_prefix=f"{name}/",
-                    )
-            else:
-                graphviz_graph.node(
-                    name,
-                    label=table,
-                    fontcolor="black",
-                    fillcolor=color,
-                )
-
-        else:
-
-            graphviz_graph.node(
-                name,
-                label=table,
-                fillcolor="#DCDCDC",
-            )
-
-    def visualize_edge(graphviz_graph, graph, edge):
-        source, sink, _, edge_data = edge
-
-        source_output_index = edge_data["source_output_index"]
-        sink_input_index = edge_data["sink_input_index"]
-
-        source_name = get_source_name(
-            graph,
-            source,
-            source_output_index,
-            level,
-            level_prefix=level_prefix,
-            max_depth=max_depth,
-        )
-        sink_name = get_sink_name(
-            graph,
-            sink,
-            sink_input_index,
-            level,
-            level_prefix=level_prefix,
-            max_depth=max_depth,
-        )
-
-        label = f"{source_output_index} -> {sink_input_index}"
-
-        graphviz_graph.edge(
-            source_name,
-            sink_name,
-            label=label,
-            fontcolor="black" if level == 0 else "white",
-        )
-
-    return visualize_graph(
-        graph,
-        graphviz_graph=graphviz_graph,
-        visualize_node=visualize_node,
-        visualize_edge=visualize_edge,
-        file_name=file_name if level == 0 else None,
-    )
-
-
-def get_source(graph, node, source_output_index):
-    operation = graph.nodes[node]["operation"]
+        return node
 
     if not isinstance(operation, TorchModule):
         return node
@@ -757,13 +529,18 @@ def get_source(graph, node, source_output_index):
         module_graph,
         module_node,
         source_output_index,
+        level=level + 1,
+        max_depth=max_depth,
     )
 
 
-def get_sink(graph, node, sink_input_index):
+def get_sink(graph, node, sink_input_index, level, max_depth=None):
     operation = graph.nodes[node]["operation"]
 
     if not isinstance(operation, TorchModule):
+        return node
+
+    if max_depth is not None and level + 1 == max_depth:
         return node
 
     module = operation
@@ -773,7 +550,194 @@ def get_sink(graph, node, sink_input_index):
         module_graph,
         module_node,
         sink_input_index,
+        level=level + 1,
+        max_depth=max_depth,
     )
+
+
+def visualize_node(
+    graphviz_graph, graph, node, max_depth, visualize_node, visualize_edge, level
+):
+    attributes = graph.nodes[node]
+    operation = attributes["operation"]
+    name = node.name
+
+    input_tensors = []
+    for source, _, edge_data in graph.in_edges(node, data=True):
+        input_shape = graph.nodes[source]["shapes"][edge_data["source_output_index"]]
+        input_dtype = graph.nodes[source]["dtypes"][edge_data["source_output_index"]]
+        input_tensors.append((input_shape, input_dtype))
+
+    output_shapes = attributes["shapes"]
+    output_dtypes = attributes["dtypes"]
+    output_tensors = tuple(
+        (shape, dtype) for shape, dtype in zip(output_shapes, output_dtypes)
+    )
+    label = f"{operation}"
+
+    duration = attributes.get("duration", None)
+    if duration is not None:
+        label = f"{label}\nduration: {duration:.9f}s"
+
+    num_columns = max(len(input_tensors), len(output_tensors))
+
+    table = label.replace("\n", "<BR/>")
+    table = f"""<
+            <TABLE BORDER="{0}" CELLBORDER="{1}"
+            CELLSPACING="{1}" CELLPADDING="{1}">
+            <TR>
+                <TD ROWSPAN="{2 if input_tensors else 1}">{table}</TD>
+            """
+
+    def compute_even_column_sizes(num_columns, num_tensors):
+        if num_tensors == 0:
+            return []
+        column_size = math.ceil(num_columns // num_tensors)
+        column_sizes = []
+        remaining = num_columns
+        for _ in range(num_tensors):
+            if remaining > column_size:
+                column_sizes.append(column_size)
+            else:
+                column_sizes.append(remaining)
+            remaining -= column_size
+        return column_sizes
+
+    input_column_sizes = compute_even_column_sizes(num_columns, len(input_tensors))
+    for index, (shape, dtype) in enumerate(input_tensors):
+        column_size = input_column_sizes[index]
+        table = (
+            table
+            + f"""
+                <TD COLSPAN="{column_size}">Input: {index}<BR/>{shape}<BR/>{dtype}</TD>
+            """
+        )
+    table += """
+            </TR>
+            <TR>
+            """
+    output_column_sizes = compute_even_column_sizes(num_columns, len(output_tensors))
+    for index, (shape, dtype) in enumerate(output_tensors):
+        column_size = output_column_sizes[index]
+        table += f"""
+                <TD COLSPAN="{column_size}">Output: {index}<BR/>{shape}<BR/>{dtype}</TD>
+            """
+    table += f"""
+            </TR>
+            </TABLE>>"""
+
+    if isinstance(operation, TorchModule):
+        color = LEVEL_COLORS[level % len(LEVEL_COLORS)]
+        if max_depth is None or level < max_depth - 1:
+            with graphviz_graph.subgraph(name=node.name) as cluster_graph:
+                cluster_graph.attr(
+                    fontcolor="black",
+                    bgcolor=color,
+                    cluster="true",
+                    label=label,
+                    rankdir="TB",
+                    shape="hexagon",
+                )
+                cluster_graph.node_attr["style"] = "filled"
+                _visualize(
+                    cluster_graph,
+                    operation.graph,
+                    max_depth=max_depth,
+                    level=level + 1,
+                    visualize_node=visualize_node,
+                    visualize_edge=visualize_edge,
+                )
+        else:
+            graphviz_graph.node(
+                name,
+                label=table,
+                fontcolor="black",
+                fillcolor=color,
+            )
+
+    else:
+        graphviz_graph.node(
+            name,
+            label=table,
+            fillcolor="#DCDCDC",
+        )
+
+
+def visualize_edge(graphviz_graph, graph, edge, max_depth, level):
+    source, sink, _, edge_data = edge
+
+    source_output_index = edge_data["source_output_index"]
+    sink_input_index = edge_data["sink_input_index"]
+
+    source_name = get_source(
+        graph,
+        source,
+        source_output_index,
+        level,
+        max_depth=max_depth,
+    ).name
+
+    sink_name = get_sink(
+        graph,
+        sink,
+        sink_input_index,
+        level,
+        max_depth=max_depth,
+    ).name
+
+    label = f"{source_output_index} -> {sink_input_index}"
+
+    graphviz_graph.edge(
+        source_name,
+        sink_name,
+        label=label,
+        fontcolor="black" if level == 0 else "white",
+    )
+
+
+def _visualize(
+    graphviz_graph,
+    graph,
+    *,
+    max_depth=None,
+    file_name=None,
+    visualize_node,
+    visualize_edge,
+    level=0,
+) -> graphviz.Digraph:
+
+    if max_depth is not None:
+        if max_depth < 1:
+            raise RuntimeError("max_depth must be greater than 0")
+        if level == max_depth:
+            return graphviz_graph
+
+    for node in graph:
+        visualize_node(
+            graphviz_graph,
+            graph,
+            node,
+            max_depth,
+            visualize_node,
+            visualize_edge,
+            level,
+        )
+
+    for node in graph:
+        for edge in graph.in_edges(node, data=True, keys=True):
+            visualize_edge(graphviz_graph, graph, edge, max_depth, level)
+
+    if file_name is not None:
+        file_name = pathlib.Path(file_name)
+        if file_name.suffix != ".svg":
+            raise ValueError(
+                f"file_name must have a .svg suffix, not {file_name.suffix}"
+            )
+        format = file_name.suffix[1:]
+        graphviz_graph.render(file_name.with_suffix(""), format=format)
+        logger.info(f'Graph visualization saved to "{file_name}"')
+
+    return graphviz_graph
 
 
 def _flatten_graph(
@@ -781,29 +745,29 @@ def _flatten_graph(
     *,
     new_graph=None,
     level=0,
-) -> MultiDiGraph:
+) -> multidigraph.MultiDiGraph:
 
     if new_graph is None:
-        new_graph = MultiDiGraph()
+        new_graph = multidigraph.MultiDiGraph()
 
-    for node in topological_traversal(graph):
+    for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModule):
             module_graph = _flatten_graph(
                 operation.graph, new_graph=new_graph, level=level + 1
             )
-            new_graph = compose_all(new_graph, module_graph)
+            new_graph = multidigraph.compose_all(new_graph, module_graph)
         else:
             new_graph = new_graph.add_node(
                 node,
                 **graph.nodes[node],
             )
 
-    for node in topological_traversal(graph):
+    for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
         for source, sink, edge_data in graph.in_edges(node, data=True):
-            source = get_source(graph, source, edge_data["source_output_index"])
-            sink = get_sink(graph, sink, edge_data["sink_input_index"])
+            source = get_source(graph, source, edge_data["source_output_index"], level)
+            sink = get_sink(graph, sink, edge_data["sink_input_index"], level)
             if source not in new_graph or sink not in new_graph:
                 continue
             new_graph = new_graph.add_edge(
@@ -815,10 +779,10 @@ def _flatten_graph(
     return new_graph
 
 
-def flatten_graph(graph) -> MultiDiGraph:
+def flatten_graph(graph) -> multidigraph.MultiDiGraph:
     graph = _flatten_graph(graph)
 
-    for node in topological_traversal(graph):
+    for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModuleInput):
             ((predecessor, _, data),) = list(graph.in_edges(node, data=True))
@@ -835,24 +799,92 @@ def flatten_graph(graph) -> MultiDiGraph:
     return graph
 
 
+def process_output(output):
+    output_tensors = []
+    if isinstance(output, TracedTensor):
+        output_tensors.append(output)
+    elif isinstance(output, (tuple, list)):
+        for value in output:
+            output_tensors += process_output(value)
+    elif dataclasses.is_dataclass(output):
+        for class_field in dataclasses.fields(output):
+            value = getattr(output, class_field.name)
+            output_tensors += process_output(value)
+    elif isinstance(output, dict):
+        for value in output.values():
+            output_tensors += process_output(value)
+    elif output is None:
+        pass
+    else:
+        raise RuntimeError(f"Unexpected type {type(output)}")
+    return output_tensors
+
+
+def get_graph(
+    value: Union[TracedTensor, Tuple[TracedTensor, ...]],
+    as_networkx: bool = False,
+    flatten: bool = False,
+) -> multidigraph.MultiDiGraph:
+    output_tensors = process_output(value)
+    graph = multidigraph.compose_all(*[tensor.graph for tensor in output_tensors])
+    if flatten:
+        graph = flatten_graph(graph)
+    if as_networkx:
+        graph = multidigraph.to_networkx(graph)
+    return graph
+
+
 def visualize(
-    value: Union[TracedTorchTensor, Tuple[TracedTorchTensor, ...]],
+    output: Union[TracedTensor, Tuple[TracedTensor, ...]],
     *,
     show_modules: bool = True,
     max_depth: Optional[int] = None,
     file_name: Optional[Union[str, pathlib.Path]] = None,
+    graph_attr: Optional[dict] = None,
+    node_attr: Optional[dict] = None,
+    edge_attr: Optional[dict] = None,
+    visualize_node: Callable = visualize_node,
+    visualize_edge: Callable = visualize_edge,
 ) -> graphviz.Digraph:
 
     if not show_modules and max_depth is not None:
-        raise ValueError("max_depth is not supported with show_modules=True")
+        raise RuntimeError("max_depth is not supported with show_modules=True")
 
-    if isinstance(value, TracedTorchTensor):
-        graph = value.graph
-    elif isinstance(value, tuple):
-        graph = compose_all(*[tensor.graph for tensor in value])
-    else:
-        raise ValueError(f"Unexpected input type: {type(value)}")
-
+    graph = get_graph(output)
     if not show_modules:
         graph = flatten_graph(graph)
-    return _visualize(graph, max_depth=max_depth, file_name=file_name)
+
+    if graph_attr is None:
+        graph_attr = {"ordering": "in", "rankdir": "TB"}
+
+    if node_attr is None:
+        node_attr = {
+            "style": "filled",
+            "border": "1",
+            "fontsize": "10",
+            "ranksep": "0.1",
+            "height": "0.2",
+            "fontname": "Linux libertine",
+            "margin": "0",
+            "shape": "box",
+        }
+    if edge_attr is None:
+        edge_attr = {
+            "fontsize": "10",
+        }
+
+    graphviz_graph = graphviz.Digraph(
+        engine="dot",
+        graph_attr=graph_attr,
+        node_attr=node_attr,
+        edge_attr=edge_attr,
+    )
+
+    return _visualize(
+        graphviz_graph,
+        graph,
+        max_depth=max_depth,
+        file_name=file_name,
+        visualize_node=visualize_node,
+        visualize_edge=visualize_edge,
+    )

@@ -28,11 +28,16 @@ import torch
 import torchtrail
 
 with torchtrail.trace():
-    tensor = torch.rand(1, 64)
-    tensor = torch.exp(tensor)
-torchtrail.visualize(tensor, file_name="exp.svg")
+    input_tensor = torch.rand(1, 64)
+    output_tensor = torch.exp(input_tensor)
+torchtrail.visualize(output_tensor, file_name="exp.svg")
 ```
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/exp.svg)
+
+The graph could be obtained as a `networkx.MultiDiGraph` using `torchtrail.get_graph`:
+```python
+graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True)
+```
 
 
 ### Tracing a module
@@ -57,6 +62,7 @@ torchtrail.visualize(output, max_depth=1, file_name="bert_max_depth_1.svg")
 
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert_max_depth_1.svg)
 
+
 ```python
 torchtrail.visualize(output, max_depth=2, file_name="bert_max_depth_2.svg")
 ```
@@ -71,6 +77,11 @@ torchtrail.visualize(output, file_name="bert.svg")
 
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert.svg)
 
+The graph could be obtained as a `networkx.MultiDiGraph` using `torchtrail.get_graph`:
+```python
+graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True)
+```
+
 Alternatively, visualization of the modules can be turned off completely using `show_modules=False`
 
 ```python
@@ -78,3 +89,8 @@ torchtrail.visualize(output, show_modules=False, file_name="bert_show_modules_Fa
 ```
 
 ![](https://raw.githubusercontent.com/arakhmati/torchtrail/main/docs/images/bert_show_modules_False.svg)
+
+The flattened graph could be obtained as a `networkx.MultiDiGraph` using `torchtrail.get_graph`:
+```python
+graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True, flatten=True)
+```
