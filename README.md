@@ -94,3 +94,8 @@ The flattened graph could be obtained as a `networkx.MultiDiGraph` using `torcht
 ```python
 graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True, flatten=True)
 ```
+
+
+## Reference
+- `torchtrail` was inspired by [torchview](https://github.com/mert-kurttutan/torchview). [mert-kurttutan](https://github.com/mert-kurttutan) did an amazing job with displaying torch graphs. However, one of the goals of `torchtrail` included producing [networkx](https://networkx.org)-compatible graph, therefore `torchtrail` was written.
+- The idea to use persistent MultiDiGraph to trace torch operations was taken from [composit](https://github.com/arakhmati/composit)

@@ -37,3 +37,14 @@ def test_rand_split():
 
     torchtrail.visualize(output_tensors)
     assert len(torchtrail.get_graph(output_tensors)) == 2
+
+
+def test_rand_exp_backward():
+    with torchtrail.trace():
+        input_tensor = torch.rand(1, 64)
+        input_tensor.requires_grad = True
+        output_tensor = torch.exp(input_tensor)
+        output_tensor.backward(torch.ones_like(output_tensor))
+
+    torchtrail.visualize(input_tensor.grad)
+    assert len(torchtrail.get_graph(input_tensor.grad)) == 2

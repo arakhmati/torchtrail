@@ -26,12 +26,12 @@ from contextlib import contextmanager
 import dataclasses
 import inspect
 import math
-from loguru import logger
 import pathlib
 import time
 from typing import Any, Callable, Optional, Union, Tuple
 
 import graphviz
+from loguru import logger
 import torch
 from pyrsistent import PClass, field
 
@@ -87,27 +87,87 @@ class Node(PClass):
         return self.name < other.name
 
 
-class TorchTensor(PClass):
+class PositionalArgument(PClass):
+    index = field(type=int, mandatory=True)
 
     def __repr__(self):
+        return f"{self.index}"
+
+
+class InputTensorIndex(PClass):
+    index = field(type=int, mandatory=True)
+
+    def __repr__(self):
+        return f"${self.index}"
+
+
+class TorchTensor(PClass):
+
+    def to_string(self, verbose=False):
         return "torch.Tensor"
+
+    __repr__ = to_string
 
 
 class TorchParameter(PClass):
     parameter = field(mandatory=True)
 
-    def __repr__(self):
+    def to_string(self, verbose=False):
         output = "torch.nn.Parameter"
         if hasattr(self.parameter, "torchtrail_name"):
-            output = f"{output}\nname: {self.parameter.torchtrail_name}"
+            output = f"{output}\n{self.parameter.torchtrail_name}"
         return output
+
+    __repr__ = to_string
 
 
 class TorchFunction(PClass):
     function = field(mandatory=True)
+    arg_name_value_pairs = field(mandatory=True)
 
-    def __repr__(self):
-        return self.function.__name__
+    def to_string(self, verbose=False):
+        if "__module__" in dir(self.function):
+            output = f"{self.function.__module__}.{self.function.__name__}"
+        elif "__objclass__" in dir(self.function):
+            output = f"{self.function.__objclass__.__module__}.{ self.function.__objclass__.__name__}.{self.function.__name__}"
+        elif "__class__" in dir(self.function):
+            output = f"{self.function.__class__}.{self.function.__name__}"
+        else:
+            raise RuntimeError(f"Unknown function type: {type(self.function)}")
+        output = output.replace("torch.nn.modules", "torch.nn")
+        output = output.replace("torch._tensor", "torch.Tensor")
+        output = output.replace("torch._C.TensorBase", "torch.Tensor")
+        output = output.replace("torch._C._nn", "torch.nn.functional")
+        output = output.replace("torch._C", "torch")
+
+        if not verbose:
+            return output
+
+        output += "("
+        current_length = len(output)
+        if current_length > 50:
+            output += "\n"
+            current_length = 0
+        for index, (name, value) in enumerate(self.arg_name_value_pairs):
+            if isinstance(value, torch.Tensor):
+                value = f"torch.Tensor(...)"
+            elif isinstance(name, PositionalArgument):
+                value_as_str = f"{value}"
+            else:
+                value_as_str = f"{name}={value}"
+            current_length += len(value_as_str)
+            output += value_as_str
+            if index != len(self.arg_name_value_pairs) - 1:
+                if current_length < 50:
+                    output += ", "
+                else:
+                    output += ",\n"
+                    current_length = 0
+
+        output += ")"
+        return output
+
+    __repr__ = to_string
 
 
 class TorchModule(PClass):
@@ -115,19 +175,48 @@ class TorchModule(PClass):
     graph: multidigraph.MultiDiGraph = field(mandatory=True)
     inputs: list[TracedTensor] = field(mandatory=True)
     outputs: list[TracedTensor] = field(mandatory=True)
+    arg_name_value_pairs = field(mandatory=True)
 
-    def __repr__(self):
-        output = type(self.module).__name__
+    def to_string(self, verbose=False):
+        output = f"{type(self.module).__module__}.{type(self.module).__name__}"
+
+        if verbose:
+            output += "("
+            current_length = len(output)
+            if current_length > 50:
+                output += "\n"
+                current_length = 0
+            for index, (name, value) in enumerate(self.arg_name_value_pairs):
+                if isinstance(name, PositionalArgument):
+                    value_as_str = f"{value}"
+                else:
+                    value_as_str = f"{name}={value}"
+
+                current_length += len(value_as_str)
+                output += value_as_str
+                if index != len(self.arg_name_value_pairs) - 1:
+                    if current_length < 50:
+                        output += ", "
+                    else:
+                        output += ",\n"
+                        current_length = 0
+
+            output += ")"
+
         if self.module.torchtrail_name != "":
-            return f"{output}\nname: {self.module.torchtrail_name}"
+            output += f"\n{self.module.torchtrail_name}"
         return output
 
+    __repr__ = to_string
 
-class TorchModuleInput(PClass):
+
+class TorchModuleForwardArg(PClass):
     name: str = field(mandatory=True)
 
-    def __repr__(self):
-        return f"TorchModuleInput\nname: {self.name}"
+    def to_string(self, verbose=False):
+        return f"{self.name}"
+
+    __repr__ = to_string
 
 
 class LazyTensor:
@@ -160,7 +249,10 @@ def get_unique_id():
 
 
 def create_input_tensor(
-    tensor: torch.Tensor, function: Optional[Callable[..., Any]] = None
+    tensor: torch.Tensor,
+    function: Optional[Callable[..., Any]] = None,
+    arg_name_value_pairs=None,
+    duration=None,
 ) -> TracedTorchTensor:
     if isinstance(tensor, torch.nn.Parameter):
         node_name = f"torch_parameter_{get_unique_id()}"
@@ -170,13 +262,19 @@ def create_input_tensor(
             operation=TorchParameter(parameter=tensor),
             shapes=(tuple(tensor.shape),),
             dtypes=(tensor.dtype,),
+            duration=duration,
         )
         return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
     elif isinstance(tensor, torch.Tensor):
         if function is None:
             operation = TorchTensor()
         else:
-            operation = TorchFunction(function=function)
+            arg_name_value_pairs = (
+                arg_name_value_pairs if arg_name_value_pairs is not None else {}
+            )
+            operation = TorchFunction(
+                function=function, arg_name_value_pairs=arg_name_value_pairs
+            )
         node_name = f"torch_input_{get_unique_id()}"
         node = Node(name=node_name)
         graph = multidigraph.MultiDiGraph().add_node(
@@ -184,24 +282,31 @@ def create_input_tensor(
             operation=operation,
             shapes=(tuple(tensor.shape),),
             dtypes=(tensor.dtype,),
+            duration=duration,
         )
         return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
     else:
         raise RuntimeError(f"Unknown input type: {type(tensor)}")
 
 
-def preprocess_args_and_kwargs(*args, **kwargs) -> Any:
+def preprocess_args_and_kwargs(*function_args, **function_kwargs) -> Any:
     def preprocess_arg(arg: Any) -> Any:
-        if isinstance(arg, TracedTorchTensor):
+        if isinstance(arg, TracedTensor):
             return arg
         elif isinstance(arg, torch.Tensor):
             return create_input_tensor(arg)
+        elif isinstance(arg, (tuple, list)):
+            return type(arg)([preprocess_arg(element) for element in arg])
+        elif isinstance(arg, dict):
+            return {key: preprocess_arg(value) for key, value in arg.items()}
         else:
             return arg
 
-    args = [preprocess_arg(arg) for arg in args]
-    kwargs = {name: preprocess_arg(arg) for name, arg in kwargs.items()}
-    return args, kwargs
+    function_args = [preprocess_arg(arg) for arg in function_args]
+    function_kwargs = {
+        name: preprocess_arg(arg) for name, arg in function_kwargs.items()
+    }
+    return function_args, function_kwargs
 
 
 def get_input_tensors(object):
@@ -217,15 +322,95 @@ def get_input_tensors(object):
     return input_tensors
 
 
+def get_arg_names(function, *, function_args, function_kwargs):
+    if inspect.isbuiltin(function):
+        arg_names = [
+            PositionalArgument(index=index) for index in range(len(function_args))
+        ] + list(function_kwargs.keys())
+    elif inspect.ismethoddescriptor(function):
+        arg_names = [
+            PositionalArgument(index=index) for index in range(len(function_args))
+        ] + list(function_kwargs.keys())
+    else:
+        signature = inspect.signature(function)
+        arg_names = [parameter.name for parameter in signature.parameters.values()]
+        if inspect.ismethod(function):
+            arg_names = ["self"] + arg_names
+        if len(arg_names) < len(function_args) + len(function_kwargs):
+            arg_names = [
+                PositionalArgument(index=index) for index in range(len(function_args))
+            ] + list(function_kwargs.keys())
+
+    if len(arg_names) < len(function_args) + len(function_kwargs):
+        raise RuntimeError(
+            f"Number of argument names must be at least as large as the number of arguments"
+        )
+    return arg_names
+
+
+def get_arg_name_value_pairs(function, *, function_args, function_kwargs):
+    arg_names = get_arg_names(
+        function, function_args=function_args, function_kwargs=function_kwargs
+    )
+
+    try:
+        signature = inspect.signature(function)
+    except:
+        signature = None
+
+    input_tensor_index = 0
+
+    def process_arg_value(arg_value):
+        nonlocal input_tensor_index
+        if isinstance(arg_value, TracedTensor):
+            output = InputTensorIndex(index=input_tensor_index)
+            input_tensor_index += 1
+            return output
+        elif isinstance(arg_value, (tuple, list)):
+            return type(arg_value)(
+                [process_arg_value(element) for element in arg_value]
+            )
+        elif isinstance(arg_value, dict):
+            return {key: process_arg_value(value) for key, value in arg_value.items()}
+        else:
+            return arg_value
+
+    arg_name_value_pairs = []
+    for arg_name, arg_value in zip(arg_names, function_args):
+
+        if signature is not None:
+            if (
+                arg_name in signature.parameters
+                and signature.parameters[arg_name].default != inspect.Parameter.empty
+                and arg_value == signature.parameters[arg_name].default
+            ):
+                continue
+        arg_name_value_pairs.append((arg_name, process_arg_value(arg_value)))
+
+    for arg_name in arg_names[len(function_args) :]:
+        if arg_name not in function_kwargs:
+            continue
+        arg_value = function_kwargs[arg_name]
+
+        if signature is not None:
+            if (
+                arg_name in signature.parameters
+                and signature.parameters[arg_name].default != inspect.Parameter.empty
+                and arg_value == signature.parameters[arg_name].default
+            ):
+                continue
+        arg_name_value_pairs.append((arg_name, process_arg_value(arg_value)))
+
+    return arg_name_value_pairs
+
+
 def preprocess_return_value(return_value):
     output_tensors = []
     if isinstance(return_value, (int, torch.Size, torch.device, torch.dtype, str)):
         pass
-    elif isinstance(return_value, torch.Tensor) and not isinstance(
-        return_value, TracedTensor
-    ):
-        raise RuntimeError(f"Expected TracedTorchTensor but got torch.Tensor")
-    elif isinstance(return_value, TracedTorchTensor):
+    elif isinstance(return_value, torch.Tensor):
+        output_tensors.append(return_value)
+    elif isinstance(return_value, TracedTensor):
         output_tensors.append(return_value)
     elif isinstance(return_value, (tuple, list)):
         for value in return_value:
@@ -247,10 +432,10 @@ def preprocess_return_value(return_value):
 def postprocess_return_value(return_value, output_tensors):
     if isinstance(return_value, (int, torch.Size, torch.device, torch.dtype, str)):
         return return_value
-    elif isinstance(return_value, torch.Tensor) and not isinstance(
-        return_value, TracedTensor
-    ):
-        raise RuntimeError(f"Expected TracedTensor but got torch.Tensor")
+    elif isinstance(return_value, torch.Tensor):
+        output_tensor, *_ = output_tensors
+        output_tensors.pop(0)
+        return output_tensor
     elif isinstance(return_value, TracedTensor):
         output_tensor, *_ = output_tensors
         output_tensors.pop(0)
@@ -287,10 +472,10 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         graph: multidigraph.MultiDiGraph,
         node: Node,
         output_index: int,
-        *args: Any,
-        **kwargs: Any,
+        *function_args: Any,
+        **function_kwargs: Any,
     ) -> Any:
-        return super().__new__(cls, tensor, *args, **kwargs)  # type: ignore[call-arg]
+        return super().__new__(cls, tensor, *function_args, **function_kwargs)  # type: ignore[call-arg]
 
     def __init__(
         self,
@@ -313,19 +498,23 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         cls: Any,
         function,
         types: Any,
-        args: Any = (),
-        kwargs: Any = None,
+        function_args: Any = (),
+        function_kwargs: Any = None,
     ) -> Any:
 
-        if kwargs is None:
-            kwargs = {}
+        if function_kwargs is None:
+            function_kwargs = {}
 
-        args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
-        input_tensors = get_input_tensors(args) + get_input_tensors(kwargs)
+        function_args, function_kwargs = preprocess_args_and_kwargs(
+            *function_args, **function_kwargs
+        )
+        input_tensors = get_input_tensors(function_args) + get_input_tensors(
+            function_kwargs
+        )
 
         start_time = time.time()
         function_return_value = super().__torch_function__(
-            function, types, args, kwargs
+            function, types, function_args, function_kwargs
         )
         end_time = time.time()
         duration = end_time - start_time
@@ -337,6 +526,10 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         shapes = tuple(tuple(tensor.shape) for tensor in output_tensors)
         dtypes = tuple(tensor.dtype for tensor in output_tensors)
 
+        arg_name_value_pairs = get_arg_name_value_pairs(
+            function, function_args=function_args, function_kwargs=function_kwargs
+        )
+
         node_name = f"{function.__name__}_{get_unique_id()}"
         node = Node(name=node_name)
         graph = multidigraph.merge_graphs(
@@ -344,7 +537,9 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         )
         graph = graph.add_node(
             node,
-            operation=TorchFunction(function=function),
+            operation=TorchFunction(
+                function=function, arg_name_value_pairs=arg_name_value_pairs
+            ),
             shapes=shapes,
             dtypes=dtypes,
             duration=duration,
@@ -365,9 +560,20 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
 
 
 def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
-    def wrapper(*args: Any, **kwargs: Any) -> TracedTensor:
-        input_tensor = function(*args, **kwargs)
-        return create_input_tensor(input_tensor, function)
+    def wrapper(*function_args: Any, **function_kwargs: Any) -> TracedTensor:
+        arg_name_value_pairs = get_arg_name_value_pairs(
+            function, function_args=function_args, function_kwargs=function_kwargs
+        )
+        start_time = time.time()
+        input_tensor = function(*function_args, **function_kwargs)
+        end_time = time.time()
+        duration = end_time - start_time
+        return create_input_tensor(
+            input_tensor,
+            function,
+            arg_name_value_pairs=arg_name_value_pairs,
+            duration=duration,
+        )
 
     return wrapper
 
@@ -377,34 +583,46 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
     node = Node(name=node_name)
     graph = multidigraph.MultiDiGraph().add_node(
         node,
-        operation=TorchModuleInput(name=name),
+        operation=TorchModuleForwardArg(name=name),
         shapes=(tuple(tensor.shape),),
         dtypes=(tensor.dtype,),
     )
     return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
 
 
-def convert_to_module_args_and_kwargs(signature, *args, **kwargs) -> Any:
-
+def convert_to_module_args_and_kwargs(module, *function_args, **function_kwargs) -> Any:
     def preprocess_arg(name: str, arg: Any) -> Any:
         if isinstance(arg, TracedTensor):
-            return create_module_input(name, arg)
+            output = create_module_input(name, arg)
+            return output
         elif isinstance(arg, torch.nn.Parameter):
             raise RuntimeError("Module parameters are not supported")
+        elif isinstance(arg, (tuple, list)):
+            if all(isinstance(element, TracedTensor) for element in arg):
+                output = []
+                for element in arg:
+                    output.append(create_module_input(name, element))
+                return type(arg)(output)
+            else:
+                return arg
         else:
             return arg
 
-    arg_names = signature.args[1:]
-    index = 0
-    while len(arg_names) < len(args):
-        arg_names.append(f"arg_{index}")
-        index += 1
-    args = [preprocess_arg(name, arg) for name, arg in zip(arg_names, args)]
-    kwargs = {name: preprocess_arg(name, arg) for name, arg in kwargs.items()}
-    return args, kwargs
+    arg_names = get_arg_names(
+        module.forward, function_args=function_args, function_kwargs=function_kwargs
+    )
+    function_args = [
+        preprocess_arg(name, arg) for name, arg in zip(arg_names, function_args)
+    ]
+    function_kwargs = {
+        name: preprocess_arg(name, arg) for name, arg in function_kwargs.items()
+    }
+    return function_args, function_kwargs
 
 
-def create_module(module, module_input_tensors, module_output_tensors):
+def create_module(
+    module, module_input_tensors, module_output_tensors, arg_name_value_pairs
+):
     module_inputs = [
         LazyTensor.from_traced_tensor(tensor) for tensor in module_input_tensors
     ]
@@ -419,28 +637,41 @@ def create_module(module, module_input_tensors, module_output_tensors):
         graph=module_graph,
         inputs=module_inputs,
         outputs=module_outputs,
+        arg_name_value_pairs=arg_name_value_pairs,
     )
     return operation
 
 
-def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) -> Any:
+def set_torchtrail_name(module, name):
+    if hasattr(module, "torchtrail_name"):
+        return
+    module.torchtrail_name = name
 
-    for name, child in module.named_modules():
-        if not hasattr(child, "torchtrail_name"):
-            child.torchtrail_name = name
+    if isinstance(module, torch.nn.ModuleList):
+        for index, child in enumerate(module.children()):
+            set_torchtrail_name(child, f"{name}.{index}" if name else f"{index}")
 
-    for name, parameter in module.named_parameters():
-        if not hasattr(parameter, "torchtrail_name"):
-            parameter.torchtrail_name = name
+    for child_name, child in module.named_children():
+        set_torchtrail_name(child, f"{name}.{child_name}" if name else child_name)
 
-    args, kwargs = preprocess_args_and_kwargs(*args, **kwargs)
+    for parameter_name, parameter in module.named_parameters():
+        parameter.torchtrail_name = parameter_name
+
+
+def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
+    module = function_args[0]
+    set_torchtrail_name(module, "")
+
+    function_args, function_kwargs = preprocess_args_and_kwargs(
+        *function_args, **function_kwargs
+    )
 
     module_args, module_kwargs = convert_to_module_args_and_kwargs(
-        inspect.getfullargspec(module.forward), *args, **kwargs
+        module, *function_args, **function_kwargs
     )
 
     start_time = time.time()
-    module_return_value = TORCH_NN_MODULE_CALL(module, *module_args, **module_kwargs)
+    module_return_value = TORCH_NN_MODULE_CALL(*module_args, **module_kwargs)
     end_time = time.time()
     duration = end_time - start_time
 
@@ -448,7 +679,9 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
         module_kwargs
     )
     module_output_tensors = preprocess_return_value(module_return_value)
-    input_tensors = get_input_tensors(args) + get_input_tensors(kwargs)
+    input_tensors = get_input_tensors(function_args) + get_input_tensors(
+        function_kwargs
+    )
     graph = multidigraph.merge_graphs(
         *((tensor.graph, tensor.node) for tensor in input_tensors)
     )
@@ -456,7 +689,12 @@ def traced_module_forward(module: torch.nn.Module, *args: Any, **kwargs: Any) ->
     shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
     dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
 
-    operation = create_module(module, module_input_tensors, module_output_tensors)
+    arg_name_value_pairs = get_arg_name_value_pairs(
+        module.forward, function_args=function_args, function_kwargs=function_kwargs
+    )[1:]
+    operation = create_module(
+        module, module_input_tensors, module_output_tensors, arg_name_value_pairs
+    )
     node_name = f"{module.torchtrail_name}_{get_unique_id()}"
     node = Node(name=node_name)
 
@@ -517,10 +755,10 @@ def get_source(graph, node, source_output_index, level, max_depth=None):
     operation = graph.nodes[node]["operation"]
 
     if max_depth is not None and level + 1 == max_depth:
-        return node
+        return node, graph.nodes[node]
 
     if not isinstance(operation, TorchModule):
-        return node
+        return node, graph.nodes[node]
 
     module = operation
     module_graph = module.graph
@@ -538,10 +776,10 @@ def get_sink(graph, node, sink_input_index, level, max_depth=None):
     operation = graph.nodes[node]["operation"]
 
     if not isinstance(operation, TorchModule):
-        return node
+        return node, graph.nodes[node]
 
     if max_depth is not None and level + 1 == max_depth:
-        return node
+        return node, graph.nodes[node]
 
     module = operation
     module_graph = module.graph
@@ -555,8 +793,26 @@ def get_sink(graph, node, sink_input_index, level, max_depth=None):
     )
 
 
+def duration_to_string(duration):
+    if duration < 1e-6:
+        return f"{duration * 1e9:.1f} ns"
+    elif duration < 1e-3:
+        return f"{duration * 1e6:.1f} µs"
+    elif duration < 1:
+        return f"{duration * 1e3:.1f} ms"
+    else:
+        return f"{duration:.1f} s"
+
+
 def visualize_node(
-    graphviz_graph, graph, node, max_depth, visualize_node, visualize_edge, level
+    graphviz_graph,
+    graph,
+    node,
+    max_depth,
+    visualize_node,
+    visualize_edge,
+    level,
+    verbose,
 ):
     attributes = graph.nodes[node]
     operation = attributes["operation"]
@@ -573,11 +829,12 @@ def visualize_node(
     output_tensors = tuple(
         (shape, dtype) for shape, dtype in zip(output_shapes, output_dtypes)
     )
-    label = f"{operation}"
+
+    label = operation.to_string(verbose=verbose)
 
     duration = attributes.get("duration", None)
     if duration is not None:
-        label = f"{label}\nduration: {duration:.9f}s"
+        label = f"{label}\nduration: {duration_to_string(duration)}"
 
     num_columns = max(len(input_tensors), len(output_tensors))
 
@@ -609,7 +866,7 @@ def visualize_node(
         table = (
             table
             + f"""
-                <TD COLSPAN="{column_size}">Input: {index}<BR/>{shape}<BR/>{dtype}</TD>
+                <TD PORT="${index}" COLSPAN="{column_size}">Input {index}<BR/>{shape}<BR/>{dtype}</TD>
             """
         )
     table += """
@@ -620,7 +877,7 @@ def visualize_node(
     for index, (shape, dtype) in enumerate(output_tensors):
         column_size = output_column_sizes[index]
         table += f"""
-                <TD COLSPAN="{column_size}">Output: {index}<BR/>{shape}<BR/>{dtype}</TD>
+                <TD PORT="#{index}" COLSPAN="{column_size}">Output {index}<BR/>{shape}<BR/>{dtype}</TD>
             """
     table += f"""
             </TR>
@@ -643,9 +900,11 @@ def visualize_node(
                     cluster_graph,
                     operation.graph,
                     max_depth=max_depth,
-                    level=level + 1,
+                    file_name=None,
                     visualize_node=visualize_node,
                     visualize_edge=visualize_edge,
+                    verbose=verbose,
+                    level=level + 1,
                 )
         else:
             graphviz_graph.node(
@@ -669,28 +928,31 @@ def visualize_edge(graphviz_graph, graph, edge, max_depth, level):
     source_output_index = edge_data["source_output_index"]
     sink_input_index = edge_data["sink_input_index"]
 
-    source_name = get_source(
+    source, _ = get_source(
         graph,
         source,
         source_output_index,
         level,
         max_depth=max_depth,
-    ).name
+    )
 
-    sink_name = get_sink(
+    sink, sink_attributes = get_sink(
         graph,
         sink,
         sink_input_index,
         level,
         max_depth=max_depth,
-    ).name
+    )
 
-    label = f"{source_output_index} -> {sink_input_index}"
+    source_name = f"{source.name}:#{source_output_index}"
+    sink_name = f"{sink.name}:${sink_input_index}"
+    if isinstance(sink_attributes["operation"], TorchModuleForwardArg):
+        sink_name = sink.name
 
     graphviz_graph.edge(
         source_name,
         sink_name,
-        label=label,
+        label=f"{source_output_index} -> {sink_input_index}",
         fontcolor="black" if level == 0 else "white",
     )
 
@@ -699,10 +961,11 @@ def _visualize(
     graphviz_graph,
     graph,
     *,
-    max_depth=None,
-    file_name=None,
+    max_depth,
+    file_name,
     visualize_node,
     visualize_edge,
+    verbose,
     level=0,
 ) -> graphviz.Digraph:
 
@@ -721,6 +984,7 @@ def _visualize(
             visualize_node,
             visualize_edge,
             level,
+            verbose=verbose,
         )
 
     for node in graph:
@@ -766,8 +1030,10 @@ def _flatten_graph(
     for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
         for source, sink, edge_data in graph.in_edges(node, data=True):
-            source = get_source(graph, source, edge_data["source_output_index"], level)
-            sink = get_sink(graph, sink, edge_data["sink_input_index"], level)
+            source, _ = get_source(
+                graph, source, edge_data["source_output_index"], level
+            )
+            sink, _ = get_sink(graph, sink, edge_data["sink_input_index"], level)
             if source not in new_graph or sink not in new_graph:
                 continue
             new_graph = new_graph.add_edge(
@@ -784,7 +1050,7 @@ def flatten_graph(graph) -> multidigraph.MultiDiGraph:
 
     for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
-        if isinstance(operation, TorchModuleInput):
+        if isinstance(operation, TorchModuleForwardArg):
             ((predecessor, _, data),) = list(graph.in_edges(node, data=True))
             for _, sink, edge_data in graph.out_edges(node, data=True):
                 edge_data = edge_data.set(
@@ -845,6 +1111,7 @@ def visualize(
     edge_attr: Optional[dict] = None,
     visualize_node: Callable = visualize_node,
     visualize_edge: Callable = visualize_edge,
+    verbose: bool = False,
 ) -> graphviz.Digraph:
 
     if not show_modules and max_depth is not None:
@@ -887,4 +1154,5 @@ def visualize(
         file_name=file_name,
         visualize_node=visualize_node,
         visualize_edge=visualize_edge,
+        verbose=verbose,
     )
