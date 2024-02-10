@@ -24,6 +24,8 @@ def test_vit_embeddings(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_embeddings.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) == 11
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -43,6 +45,8 @@ def test_vit_self_attention(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_self_attention.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) == 25
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -63,6 +67,8 @@ def test_vit_self_output(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_self_output.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 3
+    assert len(torchtrail.get_graph(output, flatten=True)) in {6, 7}
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -82,6 +88,8 @@ def test_vit_attention(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_attention.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) in {29, 30}
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -101,6 +109,8 @@ def test_vit_intermediate(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_intermediate.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) == 5
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -120,6 +130,8 @@ def test_vit_layer(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_layer.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) in {45, 46}
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -139,6 +151,11 @@ def test_vit_encoder(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit_encoder.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) in {
+        541 - config.num_hidden_layers,
+        541,
+    }
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -159,3 +176,8 @@ def test_vit(tmp_path, show_modules):
     torchtrail.visualize(
         output, show_modules=show_modules, file_name=tmp_path / "vit.svg"
     )
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) in {
+        559 - config.num_hidden_layers,
+        559,
+    }

@@ -31,25 +31,26 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name="torchtrail",
-    version="0.0.9",
+    version="0.0.10",
     author="Akhmed Rakhmati",
     author_email="akhmed.rakhmati@gmail.com",
     description="A library for tracing the execution of Pytorch operations and modules",
     packages=find_packages(),
     install_requires=[
         "torch>=1.3.0",
-        "networkx==3.1",
-        "pyrsistent==0.20.0",
-        "graphviz==0.20.1",
-        "loguru==0.6.0",
+        "networkx>=3.1",
+        "pyrsistent>=0.20.0",
+        "graphviz>=0.20.1",
+        "loguru>=0.6.0",
     ],
     extras_require={
         "dev": [
+            "accelerate==0.27.0",
             "black==24.1.1",
-            "pytest==8.0.0",
-            "transformers==4.37.2",
             "pillow==10.2.0",
+            "pytest==8.0.0",
             "torchvision==0.17.0",
+            "transformers==4.37.2",
         ]
     },
     long_description=long_description,
