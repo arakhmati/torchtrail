@@ -31,7 +31,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name="torchtrail",
-    version="0.0.10",
+    version="0.0.12",
     author="Akhmed Rakhmati",
     author_email="akhmed.rakhmati@gmail.com",
     description="A library for tracing the execution of Pytorch operations and modules",
@@ -46,7 +46,7 @@ setup(
     extras_require={
         "dev": [
             "accelerate==0.27.0",
-            "black==24.1.1",
+            "black[jupyter]==24.1.1",
             "pillow==10.2.0",
             "pytest==8.0.0",
             "torchvision==0.17.0",

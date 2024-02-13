@@ -226,8 +226,8 @@ class LazyTensor:
         self.output_index: int = output_index
 
     @classmethod
-    def from_traced_tensor(cls, traced_tesnor: TracedTorchTensor):
-        return cls(traced_tesnor.graph, traced_tesnor.node, traced_tesnor.output_index)
+    def from_traced_tensor(cls, traced_tensor: TracedTorchTensor):
+        return cls(traced_tensor.graph, traced_tensor.node, traced_tensor.output_index)
 
     @property
     def name(self) -> str:
@@ -406,12 +406,21 @@ def get_arg_name_value_pairs(function, *, function_args, function_kwargs):
 
 def preprocess_return_value(return_value):
     output_tensors = []
-    if isinstance(return_value, (int, torch.Size, torch.device, torch.dtype, str)):
+    if isinstance(
+        return_value,
+        (
+            int,
+            torch.Size,
+            torch.device,
+            torch.dtype,
+            str,
+        ),
+    ):
         pass
-    elif isinstance(return_value, torch.Tensor):
-        output_tensors.append(return_value)
     elif isinstance(return_value, TracedTensor):
         output_tensors.append(return_value)
+    elif isinstance(return_value, torch.Tensor):
+        output_tensors.append(create_input_tensor(return_value))
     elif isinstance(return_value, (tuple, list)):
         for value in return_value:
             output_tensors += preprocess_return_value(value)
@@ -425,23 +434,23 @@ def preprocess_return_value(return_value):
     elif return_value is None:
         pass
     else:
-        raise RuntimeError(f"Unexpected type {type(return_value)}")
+        logger.warning(
+            f"preprocess_return_value: unsupported type {type(return_value)}"
+        )
     return output_tensors
 
 
 def postprocess_return_value(return_value, output_tensors):
-    if isinstance(return_value, (int, torch.Size, torch.device, torch.dtype, str)):
-        return return_value
+    if isinstance(return_value, TracedTensor):
+        output_tensor, *_ = output_tensors
+        output_tensors.pop(0)
+        return output_tensor
     elif isinstance(return_value, torch.Tensor):
         output_tensor, *_ = output_tensors
         output_tensors.pop(0)
         return output_tensor
-    elif isinstance(return_value, TracedTensor):
-        output_tensor, *_ = output_tensors
-        output_tensors.pop(0)
-        return output_tensor
-    elif isinstance(return_value, tuple):
-        return tuple(
+    elif isinstance(return_value, (tuple, list)):
+        return type(return_value)(
             postprocess_return_value(value, output_tensors) for value in return_value
         )
     elif dataclasses.is_dataclass(return_value):
@@ -755,18 +764,19 @@ def get_source(graph, node, source_output_index, level, max_depth=None):
     operation = graph.nodes[node]["operation"]
 
     if max_depth is not None and level + 1 == max_depth:
-        return node, graph.nodes[node]
+        return node, source_output_index, graph.nodes[node]
 
     if not isinstance(operation, TorchModule):
-        return node, graph.nodes[node]
+        return node, source_output_index, graph.nodes[node]
 
     module = operation
     module_graph = module.graph
     module_node = module.outputs[source_output_index].node
+    module_node_output_index = module.outputs[source_output_index].output_index
     return get_source(
         module_graph,
         module_node,
-        source_output_index,
+        module_node_output_index,
         level=level + 1,
         max_depth=max_depth,
     )
@@ -776,18 +786,19 @@ def get_sink(graph, node, sink_input_index, level, max_depth=None):
     operation = graph.nodes[node]["operation"]
 
     if not isinstance(operation, TorchModule):
-        return node, graph.nodes[node]
+        return node, sink_input_index, graph.nodes[node]
 
     if max_depth is not None and level + 1 == max_depth:
-        return node, graph.nodes[node]
+        return node, sink_input_index, graph.nodes[node]
 
     module = operation
     module_graph = module.graph
     module_node = module.inputs[sink_input_index].node
+    module_node_output_index = module.inputs[sink_input_index].output_index
     return get_sink(
         module_graph,
         module_node,
-        sink_input_index,
+        module_node_output_index,
         level=level + 1,
         max_depth=max_depth,
     )
@@ -819,9 +830,13 @@ def visualize_node(
     name = node.name
 
     input_tensors = []
-    for source, _, edge_data in graph.in_edges(node, data=True):
-        input_shape = graph.nodes[source]["shapes"][edge_data["source_output_index"]]
-        input_dtype = graph.nodes[source]["dtypes"][edge_data["source_output_index"]]
+    for source_node, _, edge_data in graph.in_edges(node, data=True):
+        input_shape = graph.nodes[source_node]["shapes"][
+            edge_data["source_output_index"]
+        ]
+        input_dtype = graph.nodes[source_node]["dtypes"][
+            edge_data["source_output_index"]
+        ]
         input_tensors.append((input_shape, input_dtype))
 
     output_shapes = attributes["shapes"]
@@ -923,31 +938,31 @@ def visualize_node(
 
 
 def visualize_edge(graphviz_graph, graph, edge, max_depth, level):
-    source, sink, _, edge_data = edge
+    source_node, sink_node, _, edge_data = edge
 
     source_output_index = edge_data["source_output_index"]
     sink_input_index = edge_data["sink_input_index"]
 
-    source, _ = get_source(
+    source_node, source_output_index, *_ = get_source(
         graph,
-        source,
+        source_node,
         source_output_index,
         level,
         max_depth=max_depth,
     )
 
-    sink, sink_attributes = get_sink(
+    sink_node, sink_input_index, sink_attributes = get_sink(
         graph,
-        sink,
+        sink_node,
         sink_input_index,
         level,
         max_depth=max_depth,
     )
 
-    source_name = f"{source.name}:#{source_output_index}"
-    sink_name = f"{sink.name}:${sink_input_index}"
+    source_name = f"{source_node.name}:#{source_output_index}"
+    sink_name = f"{sink_node.name}:${sink_input_index}"
     if isinstance(sink_attributes["operation"], TorchModuleForwardArg):
-        sink_name = sink.name
+        sink_name = sink_node.name
 
     graphviz_graph.edge(
         source_name,
@@ -1029,17 +1044,18 @@ def _flatten_graph(
 
     for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
-        for source, sink, edge_data in graph.in_edges(node, data=True):
-            source, _ = get_source(
-                graph, source, edge_data["source_output_index"], level
+        for source_node, sink_node, edge_data in graph.in_edges(node, data=True):
+            source_node, source_output_index, _ = get_source(
+                graph, source_node, edge_data["source_output_index"], level
             )
-            sink, _ = get_sink(graph, sink, edge_data["sink_input_index"], level)
-            if source not in new_graph or sink not in new_graph:
-                continue
+            sink_node, sink_input_index, _ = get_sink(
+                graph, sink_node, edge_data["sink_input_index"], level
+            )
             new_graph = new_graph.add_edge(
-                source,
-                sink,
-                **edge_data,
+                source_node,
+                sink_node,
+                source_output_index=source_output_index,
+                sink_input_index=sink_input_index,
             )
 
     return new_graph
@@ -1052,13 +1068,13 @@ def flatten_graph(graph) -> multidigraph.MultiDiGraph:
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModuleForwardArg):
             ((predecessor, _, data),) = list(graph.in_edges(node, data=True))
-            for _, sink, edge_data in graph.out_edges(node, data=True):
+            for _, sink_node, edge_data in graph.out_edges(node, data=True):
                 edge_data = edge_data.set(
                     "source_output_index", data["source_output_index"]
                 )
                 graph = graph.add_edge(
                     predecessor,
-                    sink,
+                    sink_node,
                     **edge_data,
                 )
             graph = graph.remove_node(node)
