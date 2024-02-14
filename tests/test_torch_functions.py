@@ -48,3 +48,24 @@ def test_rand_exp_backward():
 
     torchtrail.visualize(input_tensor.grad)
     assert len(torchtrail.get_graph(input_tensor.grad)) == 2
+
+
+def test_rand_numpy(tmp_path):
+    with torchtrail.trace():
+        input_tensor = torch.rand(1, 64)
+        output_tensor = input_tensor.numpy()
+        output_tensor = torch.from_numpy(output_tensor)
+
+    torchtrail.visualize(output_tensor, file_name=tmp_path / "rand_numpy.svg")
+    assert len(torchtrail.get_graph(output_tensor)) == 3
+
+
+def test_rand_numpy_add(tmp_path):
+    with torchtrail.trace():
+        input_tensor = torch.rand(1, 64)
+        numpy_tensor = input_tensor.numpy()
+        output_tensor = numpy_tensor + numpy_tensor
+        print(type(output_tensor))
+
+    torchtrail.visualize(output_tensor, file_name=tmp_path / "rand_numpy_add.svg")
+    assert len(torchtrail.get_graph(output_tensor)) == 3
