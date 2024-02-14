@@ -14,7 +14,7 @@
 
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# FITNESS FOR TracedNumpyArray PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional, Union, Tuple
 
 import graphviz
 from loguru import logger
+import numpy as numpy
 import torch
 from pyrsistent import PClass, field
 
@@ -77,6 +78,29 @@ TORCH_CREATION_OPERATIONS = [
 ]
 
 
+# The following functions are overriden to capture input tensors
+NUMPY_CREATION_OPERATION_NAMES = [
+    "asarray",
+    "zeros",
+    "zeros_like",
+    "ones",
+    "ones_like",
+    "arange",
+    "linspace",
+    "logspace",
+    "eye",
+    "diag",
+    "empty",
+    "empty_like",
+    "full",
+    "full_like",
+    "heaviside",
+]
+NUMPY_CREATION_OPERATIONS = [
+    getattr(numpy, name) for name in NUMPY_CREATION_OPERATION_NAMES
+]
+
+
 class Node(PClass):
     name = field(type=str, mandatory=True)
 
@@ -99,6 +123,51 @@ class InputTensorIndex(PClass):
 
     def __repr__(self):
         return f"${self.index}"
+
+
+class NumpyArray(PClass):
+
+    def to_string(self, verbose=False):
+        return "numpy.ndarray"
+
+    __repr__ = to_string
+
+
+class NumpyFunction(PClass):
+    function = field(mandatory=True)
+    arg_name_value_pairs = field(mandatory=True)
+
+    def to_string(self, verbose=False):
+        output = f"numpy.{self.function.__name__}"
+
+        if not verbose:
+            return output
+
+        output += "("
+        current_length = len(output)
+        if current_length > 50:
+            output += "\n"
+            current_length = 0
+        for index, (name, value) in enumerate(self.arg_name_value_pairs):
+            if isinstance(value, torch.Tensor):
+                value = f"torch.Tensor(...)"
+            elif isinstance(name, PositionalArgument):
+                value_as_str = f"{value}"
+            else:
+                value_as_str = f"{name}={value}"
+            current_length += len(value_as_str)
+            output += value_as_str
+            if index != len(self.arg_name_value_pairs) - 1:
+                if current_length < 50:
+                    output += ", "
+                else:
+                    output += ",\n"
+                    current_length = 0
+
+        output += ")"
+        return output
+
+    __repr__ = to_string
 
 
 class TorchTensor(PClass):
@@ -285,6 +354,18 @@ def create_input_tensor(
             duration=duration,
         )
         return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
+    elif isinstance(tensor, numpy.ndarray):
+        operation = NumpyArray()
+        node_name = f"numpy_input_{get_unique_id()}"
+        node = Node(name=node_name)
+        graph = multidigraph.MultiDiGraph().add_node(
+            node,
+            operation=operation,
+            shapes=(tuple(tensor.shape),),
+            dtypes=(tensor.dtype,),
+            duration=duration,
+        )
+        return TracedNumpyArray(tensor, graph=graph, node=node, output_index=0)
     else:
         raise RuntimeError(f"Unknown input type: {type(tensor)}")
 
@@ -294,6 +375,8 @@ def preprocess_args_and_kwargs(*function_args, **function_kwargs) -> Any:
         if isinstance(arg, TracedTensor):
             return arg
         elif isinstance(arg, torch.Tensor):
+            return create_input_tensor(arg)
+        elif isinstance(arg, numpy.ndarray):
             return create_input_tensor(arg)
         elif isinstance(arg, (tuple, list)):
             return type(arg)([preprocess_arg(element) for element in arg])
@@ -328,6 +411,10 @@ def get_arg_names(function, *, function_args, function_kwargs):
             PositionalArgument(index=index) for index in range(len(function_args))
         ] + list(function_kwargs.keys())
     elif inspect.ismethoddescriptor(function):
+        arg_names = [
+            PositionalArgument(index=index) for index in range(len(function_args))
+        ] + list(function_kwargs.keys())
+    elif isinstance(function, numpy.ufunc):
         arg_names = [
             PositionalArgument(index=index) for index in range(len(function_args))
         ] + list(function_kwargs.keys())
@@ -419,7 +506,7 @@ def preprocess_return_value(return_value):
         pass
     elif isinstance(return_value, TracedTensor):
         output_tensors.append(return_value)
-    elif isinstance(return_value, torch.Tensor):
+    elif isinstance(return_value, (torch.Tensor, numpy.ndarray)):
         output_tensors.append(create_input_tensor(return_value))
     elif isinstance(return_value, (tuple, list)):
         for value in return_value:
@@ -445,7 +532,7 @@ def postprocess_return_value(return_value, output_tensors):
         output_tensor, *_ = output_tensors
         output_tensors.pop(0)
         return output_tensor
-    elif isinstance(return_value, torch.Tensor):
+    elif isinstance(return_value, (torch.Tensor, numpy.ndarray)):
         output_tensor, *_ = output_tensors
         output_tensors.pop(0)
         return output_tensor
@@ -562,7 +649,187 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
             )
 
         output_tensors = [
-            TracedTorchTensor(tensor, graph=graph, node=node, output_index=output_index)
+            (
+                TracedTorchTensor(
+                    tensor, graph=graph, node=node, output_index=output_index
+                )
+                if isinstance(tensor, torch.Tensor)
+                else TracedNumpyArray(
+                    tensor, graph=graph, node=node, output_index=output_index
+                )
+            )
+            for output_index, tensor in enumerate(output_tensors)
+        ]
+        return postprocess_return_value(function_return_value, output_tensors)
+
+
+class TracedNumpyArray(numpy.ndarray, TracedTensor):
+
+    def __new__(cls, input_array, graph, node, output_index):
+        # Input array is an already formed ndarray instance
+        # We first cast to be our class type
+        obj = input_array.view(cls)
+        # add the new attribute to the created instance
+        obj.graph = graph
+        obj.node = node
+        obj.output_index = output_index
+        # Finally, we must return the newly created object:
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self.graph = getattr(obj, "graph", None)
+        self.node = getattr(obj, "node", None)
+        self.output_index = getattr(obj, "output_index", None)
+
+    @property
+    def name(self) -> str:
+        return self.node.name
+
+    def __array_ufunc__(self, ufunc, method, *inputs, out=None, **function_kwargs):
+
+        function_args, function_kwargs = preprocess_args_and_kwargs(
+            *inputs, **function_kwargs
+        )
+        input_tensors = get_input_tensors(function_args) + get_input_tensors(
+            function_kwargs
+        )
+
+        for i, input_ in enumerate(inputs):
+            if isinstance(input_, TracedNumpyArray):
+                function_args[i] = input_.view(numpy.ndarray)
+
+        outputs = out
+        if outputs:
+            out_args = []
+            for output in outputs:
+                if isinstance(output, TracedNumpyArray):
+                    out_args.append(output.view(numpy.ndarray))
+                else:
+                    out_args.append(output)
+            function_kwargs["out"] = tuple(out_args)
+        else:
+            outputs = (None,) * ufunc.nout
+
+        if function_kwargs is None:
+            function_kwargs = {}
+
+        start_time = time.time()
+        function_return_value = super().__array_ufunc__(
+            ufunc, method, *function_args, **function_kwargs
+        )
+        end_time = time.time()
+        duration = end_time - start_time
+
+        if function_return_value is NotImplemented:
+            return NotImplemented
+
+        if ufunc.nout == 1:
+            results = (function_return_value,)
+        else:
+            results = function_return_value
+
+        output_tensors = tuple(
+            (numpy.asarray(result).view(TracedNumpyArray) if output is None else output)
+            for result, output in zip(results, outputs)
+        )
+
+        shapes = tuple(tuple(tensor.shape) for tensor in output_tensors)
+        dtypes = tuple(tensor.dtype for tensor in output_tensors)
+
+        arg_name_value_pairs = get_arg_name_value_pairs(
+            ufunc, function_args=function_args, function_kwargs=function_kwargs
+        )
+
+        node_name = f"{ufunc.__name__}_{get_unique_id()}"
+        node = Node(name=node_name)
+        graph = multidigraph.merge_graphs(
+            *((tensor.graph, tensor.node) for tensor in input_tensors)
+        )
+        graph = graph.add_node(
+            node,
+            operation=NumpyFunction(
+                function=ufunc, arg_name_value_pairs=arg_name_value_pairs
+            ),
+            shapes=shapes,
+            dtypes=dtypes,
+            duration=duration,
+        )
+        for input_index, tensor in enumerate(input_tensors):
+            graph = graph.add_edge(
+                tensor.node,
+                node,
+                source_output_index=tensor.output_index,
+                sink_input_index=input_index,
+            )
+
+        output_tensors = [
+            TracedNumpyArray(tensor, graph=graph, node=node, output_index=output_index)
+            for output_index, tensor in enumerate(output_tensors)
+        ]
+        return output_tensors[0] if len(output_tensors) == 1 else output_tensors
+
+    def __array_function__(
+        self,
+        function: Any,
+        types: Any,
+        *function_args: Any,
+        **function_kwargs: Any,
+    ) -> Any:
+
+        if function_kwargs is None:
+            function_kwargs = {}
+
+        function_args, function_kwargs = preprocess_args_and_kwargs(
+            *function_args, **function_kwargs
+        )
+        input_tensors = get_input_tensors(function_args) + get_input_tensors(
+            function_kwargs
+        )
+
+        start_time = time.time()
+        function_return_value = super().__array_function__(
+            function, types, *function_args, **function_kwargs
+        )
+        end_time = time.time()
+        duration = end_time - start_time
+
+        output_tensors = preprocess_return_value(function_return_value)
+        if not output_tensors:
+            return function_return_value
+
+        shapes = tuple(tuple(tensor.shape) for tensor in output_tensors)
+        dtypes = tuple(tensor.dtype for tensor in output_tensors)
+
+        arg_name_value_pairs = get_arg_name_value_pairs(
+            function, function_args=function_args, function_kwargs=function_kwargs
+        )
+
+        node_name = f"{function.__name__}_{get_unique_id()}"
+        node = Node(name=node_name)
+        graph = multidigraph.merge_graphs(
+            *((tensor.graph, tensor.node) for tensor in input_tensors)
+        )
+        graph = graph.add_node(
+            node,
+            operation=NumpyFunction(
+                function=function, arg_name_value_pairs=arg_name_value_pairs
+            ),
+            shapes=shapes,
+            dtypes=dtypes,
+            duration=duration,
+        )
+        for input_index, tensor in enumerate(input_tensors):
+            graph = graph.add_edge(
+                tensor.node,
+                node,
+                source_output_index=tensor.output_index,
+                sink_input_index=input_index,
+            )
+
+        output_tensors = [
+            TracedNumpyArray(tensor, graph=graph, node=node, output_index=output_index)
             for output_index, tensor in enumerate(output_tensors)
         ]
         return postprocess_return_value(function_return_value, output_tensors)
@@ -577,6 +844,7 @@ def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
         input_tensor = function(*function_args, **function_kwargs)
         end_time = time.time()
         duration = end_time - start_time
+        # TODO(arakhmati): for ops that take input tenors, we should connect the input tensors to the output tensor
         return create_input_tensor(
             input_tensor,
             function,
@@ -740,6 +1008,9 @@ def trace():
         for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
             setattr(torch, name, wrap_create_function(op))
 
+        for name, op in zip(NUMPY_CREATION_OPERATION_NAMES, NUMPY_CREATION_OPERATIONS):
+            setattr(numpy, name, wrap_create_function(op))
+
         yield
 
     finally:
@@ -748,6 +1019,9 @@ def trace():
 
         for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
             setattr(torch, name, op)
+
+        for name, op in zip(NUMPY_CREATION_OPERATION_NAMES, NUMPY_CREATION_OPERATIONS):
+            setattr(numpy, name, op)
 
 
 LEVEL_COLORS = [
