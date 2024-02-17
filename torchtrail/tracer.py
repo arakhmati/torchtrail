@@ -79,12 +79,13 @@ TORCH_CREATION_OPERATIONS = [
 
 class Node(PClass):
     name = field(type=str, mandatory=True)
+    unique_id = field(type=int, mandatory=True)
 
     def __hash__(self):
         return hash(self.name)
 
     def __lt__(self, other):
-        return self.name < other.name
+        return self.unique_id < other.unique_id
 
 
 class PositionalArgument(PClass):
@@ -255,8 +256,9 @@ def create_input_tensor(
     duration=None,
 ) -> TracedTorchTensor:
     if isinstance(tensor, torch.nn.Parameter):
-        node_name = f"torch_parameter_{get_unique_id()}"
-        node = Node(name=node_name)
+        unique_id = get_unique_id()
+        node_name = f"torch_parameter_{unique_id}"
+        node = Node(name=node_name, unique_id=unique_id)
         graph = multidigraph.MultiDiGraph().add_node(
             node,
             operation=TorchParameter(parameter=tensor),
@@ -275,8 +277,10 @@ def create_input_tensor(
             operation = TorchFunction(
                 function=function, arg_name_value_pairs=arg_name_value_pairs
             )
-        node_name = f"torch_input_{get_unique_id()}"
-        node = Node(name=node_name)
+            
+        unique_id = get_unique_id()
+        node_name = f"torch_input_{unique_id}"
+        node = Node(name=node_name, unique_id=unique_id)
         graph = multidigraph.MultiDiGraph().add_node(
             node,
             operation=operation,
@@ -539,8 +543,9 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
             function, function_args=function_args, function_kwargs=function_kwargs
         )
 
-        node_name = f"{function.__name__}_{get_unique_id()}"
-        node = Node(name=node_name)
+        unique_id = get_unique_id()
+        node_name = f"{function.__name__}_{unique_id}"
+        node = Node(name=node_name, unique_id=unique_id)
         graph = multidigraph.merge_graphs(
             *((tensor.graph, tensor.node) for tensor in input_tensors)
         )
@@ -588,8 +593,9 @@ def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
-    node_name = f"module_input_{get_unique_id()}"
-    node = Node(name=node_name)
+    unique_id = get_unique_id()
+    node_name = f"module_input_{unique_id}"
+    node = Node(name=node_name, unique_id=unique_id)
     graph = multidigraph.MultiDiGraph().add_node(
         node,
         operation=TorchModuleForwardArg(name=name),
@@ -704,8 +710,10 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     operation = create_module(
         module, module_input_tensors, module_output_tensors, arg_name_value_pairs
     )
-    node_name = f"{module.torchtrail_name}_{get_unique_id()}"
-    node = Node(name=node_name)
+    
+    unique_id = get_unique_id()
+    node_name = f"{module.torchtrail_name}_{unique_id}"
+    node = Node(name=node_name, unique_id=unique_id)
 
     graph = graph.add_node(
         node,
@@ -826,7 +834,6 @@ def visualize_node(
 ):
     attributes = graph.nodes[node]
     operation = attributes["operation"]
-    name = node.name
 
     input_tensors = []
     for source_node, _, edge_data in graph.in_edges(node, data=True):
@@ -922,7 +929,7 @@ def visualize_node(
                 )
         else:
             graphviz_graph.node(
-                name,
+                node.name,
                 label=table,
                 fontcolor="black",
                 fillcolor=color,
@@ -930,7 +937,7 @@ def visualize_node(
 
     else:
         graphviz_graph.node(
-            name,
+            node.name,
             label=table,
             fillcolor="#DCDCDC",
         )
@@ -989,7 +996,7 @@ def _visualize(
         if level == max_depth:
             return graphviz_graph
 
-    for node in graph:
+    for node in sorted(graph):
         visualize_node(
             graphviz_graph,
             graph,
@@ -1001,7 +1008,7 @@ def _visualize(
             verbose=verbose,
         )
 
-    for node in graph:
+    for node in sorted(graph):
         for edge in graph.in_edges(node, data=True, keys=True):
             visualize_edge(graphviz_graph, graph, edge, max_depth, level)
 
@@ -1102,10 +1109,12 @@ def process_output(output):
 
 
 def get_graph(
-    value: Union[TracedTensor, Tuple[TracedTensor, ...]],
+    value: Union[multidigraph.MultiDiGraph, TracedTensor, Tuple[TracedTensor, ...]],
     as_networkx: bool = False,
     flatten: bool = False,
 ) -> multidigraph.MultiDiGraph:
+    if isinstance(value, multidigraph.MultiDiGraph):
+        return value
     output_tensors = process_output(value)
     graph = multidigraph.compose_all(*[tensor.graph for tensor in output_tensors])
     if flatten:
