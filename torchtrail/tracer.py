@@ -277,7 +277,7 @@ def create_input_tensor(
             operation = TorchFunction(
                 function=function, arg_name_value_pairs=arg_name_value_pairs
             )
-            
+
         unique_id = get_unique_id()
         node_name = f"torch_input_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
@@ -710,7 +710,7 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     operation = create_module(
         module, module_input_tensors, module_output_tensors, arg_name_value_pairs
     )
-    
+
     unique_id = get_unique_id()
     node_name = f"{module.torchtrail_name}_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
@@ -1067,23 +1067,44 @@ def _flatten_graph(
     return new_graph
 
 
-def flatten_graph(graph) -> multidigraph.MultiDiGraph:
-    graph = _flatten_graph(graph)
+def _remove_module_forward_args(graph):
+    new_graph = multidigraph.MultiDiGraph()
+
+    for node in graph:
+        operation = graph.nodes[node]["operation"]
+        if isinstance(operation, TorchModuleForwardArg):
+            continue
+        new_graph = new_graph.add_node(
+            node,
+            **graph.nodes[node],
+        )
 
     for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModuleForwardArg):
-            ((predecessor, _, data),) = list(graph.in_edges(node, data=True))
-            for _, sink_node, edge_data in graph.out_edges(node, data=True):
+            continue
+        for source_node, _, edge_data in graph.in_edges(node, data=True):
+            while isinstance(
+                graph.nodes[source_node]["operation"], TorchModuleForwardArg
+            ):
+                ((source_node, _, source_node_edge_data),) = graph.in_edges(
+                    source_node, data=True
+                )
                 edge_data = edge_data.set(
-                    "source_output_index", data["source_output_index"]
+                    "source_output_index", source_node_edge_data["source_output_index"]
                 )
-                graph = graph.add_edge(
-                    predecessor,
-                    sink_node,
-                    **edge_data,
-                )
-            graph = graph.remove_node(node)
+            new_graph = new_graph.add_edge(
+                source_node,
+                node,
+                **edge_data,
+            )
+
+    return new_graph
+
+
+def flatten_graph(graph) -> multidigraph.MultiDiGraph:
+    graph = _flatten_graph(graph)
+    graph = _remove_module_forward_args(graph)
     return graph
 
 

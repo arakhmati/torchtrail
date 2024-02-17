@@ -167,38 +167,6 @@ class MultiDiGraph(PClass):
             new_graph = new_graph.add_edge(source, sink, key, **data, **attr)
         return new_graph
 
-    def remove_node(self, node):
-        for source, sink in self.edges(node):
-            self = self.remove_edge(source, sink)
-
-        _node = self._node.remove(node)
-        _succ = self._succ
-        _pred = self._pred
-
-        new_graph = self.set(_node=_node, _pred=_pred, _succ=_succ)
-        return new_graph
-
-    def remove_edge(self, source, sink, key=None):
-        def _remove_edge(node_to_neighbors, from_node, to_node, edge_key):
-            neighbors = node_to_neighbors.get(from_node, pmap())
-            edges = neighbors.get(to_node, pmap())
-            if not edges:
-                raise networkx.NetworkXError("There is no edge to remove!")
-            elif edge_key is None:
-                edge_key = max(edges.keys())
-            elif edge_key not in edges:
-                raise networkx.NetworkXError("There is no edge to remove!")
-            edges = edges.remove(edge_key)
-            neighbors = neighbors.set(to_node, edges)
-            node_to_neighbors = node_to_neighbors.set(from_node, neighbors)
-            return node_to_neighbors
-
-        _pred = _remove_edge(self._pred, sink, source, key)
-        _succ = _remove_edge(self._succ, source, sink, key)
-
-        new_graph = self.set(_pred=_pred, _succ=_succ)
-        return new_graph
-
     @property
     def nodes(self, data=False, default=None):
         return NodeView(self)(data=data, default=default)
