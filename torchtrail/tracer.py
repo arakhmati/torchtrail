@@ -88,7 +88,7 @@ class Node(PClass):
         return self.unique_id < other.unique_id
 
 
-class PositionalArgument(PClass):
+class PositionalArgumentName(PClass):
     index = field(type=int, mandatory=True)
 
     def __repr__(self):
@@ -152,7 +152,7 @@ class TorchFunction(PClass):
         for index, (name, value) in enumerate(self.arg_name_value_pairs):
             if isinstance(value, torch.Tensor):
                 value = f"torch.Tensor(...)"
-            elif isinstance(name, PositionalArgument):
+            elif isinstance(name, PositionalArgumentName):
                 value_as_str = f"{value}"
             else:
                 value_as_str = f"{name}={value}"
@@ -188,7 +188,7 @@ class TorchModule(PClass):
                 output += "\n"
                 current_length = 0
             for index, (name, value) in enumerate(self.arg_name_value_pairs):
-                if isinstance(name, PositionalArgument):
+                if isinstance(name, PositionalArgumentName):
                     value_as_str = f"{value}"
                 else:
                     value_as_str = f"{name}={value}"
@@ -211,7 +211,7 @@ class TorchModule(PClass):
     __repr__ = to_string
 
 
-class TorchModuleForwardArg(PClass):
+class TorchModuleInput(PClass):
     name: str = field(mandatory=True)
 
     def to_string(self, verbose=False):
@@ -220,7 +220,7 @@ class TorchModuleForwardArg(PClass):
     __repr__ = to_string
 
 
-class LazyTensor:
+class ModuleIOTensor:
     def __init__(self, graph: multidigraph.MultiDiGraph, node: Node, output_index: int):
         self.graph: multidigraph.MultiDiGraph = graph
         self.node: Node = node
@@ -329,11 +329,11 @@ def get_input_tensors(object):
 def get_arg_names(function, *, function_args, function_kwargs):
     if inspect.isbuiltin(function):
         arg_names = [
-            PositionalArgument(index=index) for index in range(len(function_args))
+            PositionalArgumentName(index=index) for index in range(len(function_args))
         ] + list(function_kwargs.keys())
     elif inspect.ismethoddescriptor(function):
         arg_names = [
-            PositionalArgument(index=index) for index in range(len(function_args))
+            PositionalArgumentName(index=index) for index in range(len(function_args))
         ] + list(function_kwargs.keys())
     else:
         signature = inspect.signature(function)
@@ -342,7 +342,8 @@ def get_arg_names(function, *, function_args, function_kwargs):
             arg_names = ["self"] + arg_names
         if len(arg_names) < len(function_args) + len(function_kwargs):
             arg_names = [
-                PositionalArgument(index=index) for index in range(len(function_args))
+                PositionalArgumentName(index=index)
+                for index in range(len(function_args))
             ] + list(function_kwargs.keys())
 
     if len(arg_names) < len(function_args) + len(function_kwargs):
@@ -598,7 +599,7 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
     node = Node(name=node_name, unique_id=unique_id)
     graph = multidigraph.MultiDiGraph().add_node(
         node,
-        operation=TorchModuleForwardArg(name=name),
+        operation=TorchModuleInput(name=name),
         shapes=(tuple(tensor.shape),),
         dtypes=(tensor.dtype,),
     )
@@ -613,13 +614,9 @@ def convert_to_module_args_and_kwargs(module, *function_args, **function_kwargs)
         elif isinstance(arg, torch.nn.Parameter):
             raise RuntimeError("Module parameters are not supported")
         elif isinstance(arg, (tuple, list)):
-            if all(isinstance(element, TracedTensor) for element in arg):
-                output = []
-                for element in arg:
-                    output.append(create_module_input(name, element))
-                return type(arg)(output)
-            else:
-                return arg
+            return type(arg)([preprocess_arg(name, element) for element in arg])
+        elif isinstance(arg, dict):
+            return {key: preprocess_arg(name, element) for key, element in arg.items()}
         else:
             return arg
 
@@ -639,10 +636,10 @@ def create_module(
     module, module_input_tensors, module_output_tensors, arg_name_value_pairs
 ):
     module_inputs = [
-        LazyTensor.from_traced_tensor(tensor) for tensor in module_input_tensors
+        ModuleIOTensor.from_traced_tensor(tensor) for tensor in module_input_tensors
     ]
     module_outputs = [
-        LazyTensor.from_traced_tensor(tensor) for tensor in module_output_tensors
+        ModuleIOTensor.from_traced_tensor(tensor) for tensor in module_output_tensors
     ]
     module_graph = multidigraph.compose_all(
         *[tensor.graph for tensor in module_inputs + module_outputs]
@@ -805,7 +802,7 @@ def get_sink(graph, node, sink_input_index, level, max_depth=None):
     return get_sink(
         module_graph,
         module_node,
-        0,  # module_node is always a torchtrail.tracer.TorchModuleForwardArg
+        0,  # module_node is always a torchtrail.tracer.TorchModuleInput
         level=level + 1,
         max_depth=max_depth,
     )
@@ -967,7 +964,7 @@ def visualize_edge(graphviz_graph, graph, edge, max_depth, level):
 
     source_name = f"{source_node.name}:#{source_output_index}"
     sink_name = f"{sink_node.name}:${sink_input_index}"
-    if isinstance(sink_attributes["operation"], TorchModuleForwardArg):
+    if isinstance(sink_attributes["operation"], TorchModuleInput):
         sink_name = sink_node.name
 
     graphviz_graph.edge(
@@ -1014,9 +1011,9 @@ def _visualize(
 
     if file_name is not None:
         file_name = pathlib.Path(file_name)
-        if file_name.suffix != ".svg":
+        if file_name.suffix not in {".svg", ".png", ".pdf"}:
             raise ValueError(
-                f"file_name must have a .svg suffix, not {file_name.suffix}"
+                f"file_name must have a .svg, .png or .pdf suffix, not {file_name.suffix}"
             )
         format = file_name.suffix[1:]
         graphviz_graph.render(file_name.with_suffix(""), format=format)
@@ -1072,7 +1069,7 @@ def _remove_module_forward_args(graph):
 
     for node in graph:
         operation = graph.nodes[node]["operation"]
-        if isinstance(operation, TorchModuleForwardArg):
+        if isinstance(operation, TorchModuleInput):
             continue
         new_graph = new_graph.add_node(
             node,
@@ -1081,12 +1078,10 @@ def _remove_module_forward_args(graph):
 
     for node in multidigraph.topological_traversal(graph):
         operation = graph.nodes[node]["operation"]
-        if isinstance(operation, TorchModuleForwardArg):
+        if isinstance(operation, TorchModuleInput):
             continue
         for source_node, _, edge_data in graph.in_edges(node, data=True):
-            while isinstance(
-                graph.nodes[source_node]["operation"], TorchModuleForwardArg
-            ):
+            while isinstance(graph.nodes[source_node]["operation"], TorchModuleInput):
                 ((source_node, _, source_node_edge_data),) = graph.in_edges(
                     source_node, data=True
                 )
