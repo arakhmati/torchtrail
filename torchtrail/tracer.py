@@ -103,6 +103,7 @@ class InputTensorIndex(PClass):
 
 
 class TorchTensor(PClass):
+    tensor: torch.Tensor = field(mandatory=True)
 
     def to_string(self, verbose=False):
         return "torch.Tensor"
@@ -269,7 +270,7 @@ def create_input_tensor(
         return TracedTorchTensor(tensor, graph=graph, node=node, output_index=0)
     elif isinstance(tensor, torch.Tensor):
         if function is None:
-            operation = TorchTensor()
+            operation = TorchTensor(tensor=tensor)
         else:
             arg_name_value_pairs = (
                 arg_name_value_pairs if arg_name_value_pairs is not None else {}
