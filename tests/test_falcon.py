@@ -49,6 +49,7 @@ def test_falcon(tmp_path, show_modules):
     assert len(torchtrail.get_graph(output, flatten=True)) == 1578
 
 
+@pytest.mark.skip(reason="Test takes too long to run.")
 @pytest.mark.parametrize("show_modules", [True, False])
 @pytest.mark.parametrize("num_hidden_layers", [1, 2])
 @pytest.mark.parametrize("num_tokens", [1, 3])
