@@ -31,11 +31,9 @@ import time
 from typing import Any, Callable, Optional, Union, Tuple
 
 import graphviz
+import networkx as nx
 from loguru import logger
 import torch
-from pyrsistent import PClass, field
-
-from torchtrail import multidigraph
 
 
 TORCH_NN_MODULE_CALL = torch.nn.Module.__call__
@@ -77,9 +75,10 @@ TORCH_CREATION_OPERATIONS = [
 ]
 
 
-class Node(PClass):
-    name = field(type=str, mandatory=True)
-    unique_id = field(type=int, mandatory=True)
+@dataclasses.dataclass
+class Node:
+    name: str
+    unique_id: int
 
     def __hash__(self):
         return hash(self.name)
@@ -88,22 +87,28 @@ class Node(PClass):
         return self.unique_id < other.unique_id
 
 
-class PositionalArgumentName(PClass):
-    index = field(type=int, mandatory=True)
+@dataclasses.dataclass
+class PositionalArgumentName:
+    index: int
 
     def __repr__(self):
         return f"{self.index}"
 
+    def __hash__(self):
+        return hash(self.index)
 
-class InputTensorIndex(PClass):
-    index = field(type=int, mandatory=True)
+
+@dataclasses.dataclass
+class InputTensorIndex:
+    index: int
 
     def __repr__(self):
         return f"${self.index}"
 
 
-class TorchTensor(PClass):
-    tensor: torch.Tensor = field(mandatory=True)
+@dataclasses.dataclass
+class TorchTensor:
+    tensor: torch.Tensor
 
     def to_string(self, verbose=False):
         return "torch.Tensor"
@@ -111,8 +116,9 @@ class TorchTensor(PClass):
     __repr__ = to_string
 
 
-class TorchParameter(PClass):
-    parameter = field(mandatory=True)
+@dataclasses.dataclass
+class TorchParameter:
+    parameter: torch.nn.Parameter
 
     def to_string(self, verbose=False):
         output = "torch.nn.Parameter"
@@ -123,9 +129,10 @@ class TorchParameter(PClass):
     __repr__ = to_string
 
 
-class TorchFunction(PClass):
-    function = field(mandatory=True)
-    arg_name_value_pairs = field(mandatory=True)
+@dataclasses.dataclass
+class TorchFunction:
+    function: Any
+    arg_name_value_pairs: list
 
     def to_string(self, verbose=False):
         if "__module__" in dir(self.function):
@@ -172,12 +179,13 @@ class TorchFunction(PClass):
     __repr__ = to_string
 
 
-class TorchModule(PClass):
-    module = field(mandatory=True)
-    graph: multidigraph.MultiDiGraph = field(mandatory=True)
-    inputs: list[TracedTensor] = field(mandatory=True)
-    outputs: list[TracedTensor] = field(mandatory=True)
-    arg_name_value_pairs = field(mandatory=True)
+@dataclasses.dataclass
+class TorchModule:
+    module: torch.nn.Module
+    graph: nx.MultiDiGraph
+    inputs: list[TracedTensor]
+    outputs: list[TracedTensor]
+    arg_name_value_pairs: list
 
     def to_string(self, verbose=False):
         output = f"{type(self.module).__module__}.{type(self.module).__name__}"
@@ -212,8 +220,9 @@ class TorchModule(PClass):
     __repr__ = to_string
 
 
-class TorchModuleInput(PClass):
-    name: str = field(mandatory=True)
+@dataclasses.dataclass
+class TorchModuleInput:
+    name: str
 
     def to_string(self, verbose=False):
         return f"{self.name}"
@@ -222,8 +231,8 @@ class TorchModuleInput(PClass):
 
 
 class ModuleIOTensor:
-    def __init__(self, graph: multidigraph.MultiDiGraph, node: Node, output_index: int):
-        self.graph: multidigraph.MultiDiGraph = graph
+    def __init__(self, graph: nx.MultiDiGraph, node: Node, output_index: int):
+        self.graph: nx.MultiDiGraph = graph
         self.node: Node = node
         self.output_index: int = output_index
 
@@ -260,7 +269,8 @@ def create_input_tensor(
         unique_id = get_unique_id()
         node_name = f"torch_parameter_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
-        graph = multidigraph.MultiDiGraph().add_node(
+        graph = nx.MultiDiGraph()
+        graph.add_node(
             node,
             operation=TorchParameter(parameter=tensor),
             shapes=(tuple(tensor.shape),),
@@ -282,7 +292,9 @@ def create_input_tensor(
         unique_id = get_unique_id()
         node_name = f"torch_input_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
-        graph = multidigraph.MultiDiGraph().add_node(
+
+        graph = nx.MultiDiGraph()
+        graph.add_node(
             node,
             operation=operation,
             shapes=(tuple(tensor.shape),),
@@ -484,7 +496,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
     def __new__(
         cls: Any,
         tensor: Any,
-        graph: multidigraph.MultiDiGraph,
+        graph: nx.MultiDiGraph,
         node: Node,
         output_index: int,
         *function_args: Any,
@@ -496,11 +508,11 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         self,
         tensor: Any,
         *,
-        graph: multidigraph.MultiDiGraph,
+        graph: nx.MultiDiGraph,
         node: Node,
         output_index: int,
     ):
-        self.graph: multidigraph.MultiDiGraph = graph
+        self.graph: nx.MultiDiGraph = graph
         self.node: Node = node
         self.output_index: int = output_index
 
@@ -516,6 +528,8 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         function_args: Any = (),
         function_kwargs: Any = None,
     ) -> Any:
+
+        types = tuple(torch.Tensor if t == TorchTensor else t for t in types)
 
         if function_kwargs is None:
             function_kwargs = {}
@@ -548,10 +562,8 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         unique_id = get_unique_id()
         node_name = f"{function.__name__}_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
-        graph = multidigraph.merge_graphs(
-            *((tensor.graph, tensor.node) for tensor in input_tensors)
-        )
-        graph = graph.add_node(
+        graph = nx.compose_all([tensor.graph for tensor in input_tensors])
+        graph.add_node(
             node,
             operation=TorchFunction(
                 function=function, arg_name_value_pairs=arg_name_value_pairs
@@ -561,7 +573,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
             duration=duration,
         )
         for input_index, tensor in enumerate(input_tensors):
-            graph = graph.add_edge(
+            graph.add_edge(
                 tensor.node,
                 node,
                 source_output_index=tensor.output_index,
@@ -598,7 +610,8 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
     unique_id = get_unique_id()
     node_name = f"module_input_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
-    graph = multidigraph.MultiDiGraph().add_node(
+    graph = nx.MultiDiGraph()
+    graph.add_node(
         node,
         operation=TorchModuleInput(name=name),
         shapes=(tuple(tensor.shape),),
@@ -642,8 +655,8 @@ def create_module(
     module_outputs = [
         ModuleIOTensor.from_traced_tensor(tensor) for tensor in module_output_tensors
     ]
-    module_graph = multidigraph.compose_all(
-        *[tensor.graph for tensor in module_inputs + module_outputs]
+    module_graph = nx.compose_all(
+        [tensor.graph for tensor in module_inputs + module_outputs]
     )
     operation = TorchModule(
         module=module,
@@ -695,9 +708,7 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     input_tensors = get_input_tensors(function_args) + get_input_tensors(
         function_kwargs
     )
-    graph = multidigraph.merge_graphs(
-        *((tensor.graph, tensor.node) for tensor in input_tensors)
-    )
+    graph = nx.compose_all([tensor.graph for tensor in input_tensors])
 
     shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
     dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
@@ -713,7 +724,7 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     node_name = f"{module.torchtrail_name}_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
 
-    graph = graph.add_node(
+    graph.add_node(
         node,
         operation=operation,
         shapes=shapes,
@@ -722,7 +733,7 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     )
 
     for input_index, tensor in enumerate(input_tensors):
-        graph = graph.add_edge(
+        graph.add_edge(
             tensor.node,
             node,
             source_output_index=tensor.output_index,
@@ -1028,25 +1039,25 @@ def _flatten_graph(
     *,
     new_graph=None,
     level=0,
-) -> multidigraph.MultiDiGraph:
+) -> nx.MultiDiGraph:
 
     if new_graph is None:
-        new_graph = multidigraph.MultiDiGraph()
+        new_graph = nx.MultiDiGraph()
 
-    for node in multidigraph.topological_traversal(graph):
+    for node in nx.topological_sort(graph):
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModule):
             module_graph = _flatten_graph(
                 operation.graph, new_graph=new_graph, level=level + 1
             )
-            new_graph = multidigraph.compose_all(new_graph, module_graph)
+            new_graph = nx.compose_all([new_graph, module_graph])
         else:
-            new_graph = new_graph.add_node(
+            new_graph.add_node(
                 node,
                 **graph.nodes[node],
             )
 
-    for node in multidigraph.topological_traversal(graph):
+    for node in nx.topological_sort(graph):
         operation = graph.nodes[node]["operation"]
         for source_node, sink_node, edge_data in graph.in_edges(node, data=True):
             source_node, source_output_index, _ = get_source(
@@ -1055,7 +1066,7 @@ def _flatten_graph(
             sink_node, sink_input_index, _ = get_sink(
                 graph, sink_node, edge_data["sink_input_index"], level
             )
-            new_graph = new_graph.add_edge(
+            new_graph.add_edge(
                 source_node,
                 sink_node,
                 source_output_index=source_output_index,
@@ -1066,18 +1077,18 @@ def _flatten_graph(
 
 
 def _remove_module_forward_args(graph):
-    new_graph = multidigraph.MultiDiGraph()
+    new_graph = nx.MultiDiGraph()
 
     for node in graph:
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModuleInput):
             continue
-        new_graph = new_graph.add_node(
+        new_graph.add_node(
             node,
             **graph.nodes[node],
         )
 
-    for node in multidigraph.topological_traversal(graph):
+    for node in nx.topological_sort(graph):
         operation = graph.nodes[node]["operation"]
         if isinstance(operation, TorchModuleInput):
             continue
@@ -1086,10 +1097,10 @@ def _remove_module_forward_args(graph):
                 ((source_node, _, source_node_edge_data),) = graph.in_edges(
                     source_node, data=True
                 )
-                edge_data = edge_data.set(
-                    "source_output_index", source_node_edge_data["source_output_index"]
-                )
-            new_graph = new_graph.add_edge(
+                edge_data["source_output_index"] = source_node_edge_data[
+                    "source_output_index"
+                ]
+            new_graph.add_edge(
                 source_node,
                 node,
                 **edge_data,
@@ -1098,7 +1109,7 @@ def _remove_module_forward_args(graph):
     return new_graph
 
 
-def flatten_graph(graph) -> multidigraph.MultiDiGraph:
+def flatten_graph(graph) -> nx.MultiDiGraph:
     graph = _flatten_graph(graph)
     graph = _remove_module_forward_args(graph)
     return graph
@@ -1126,14 +1137,14 @@ def process_output(output):
 
 
 def get_graph(
-    value: Union[multidigraph.MultiDiGraph, TracedTensor, Tuple[TracedTensor, ...]],
+    value: Union[nx.MultiDiGraph, TracedTensor, Tuple[TracedTensor, ...]],
     as_networkx: bool = False,
     flatten: bool = False,
-) -> multidigraph.MultiDiGraph:
-    if isinstance(value, multidigraph.MultiDiGraph):
+) -> nx.MultiDiGraph:
+    if isinstance(value, nx.MultiDiGraph):
         return value
     output_tensors = process_output(value)
-    graph = multidigraph.compose_all(*[tensor.graph for tensor in output_tensors])
+    graph = nx.compose_all([tensor.graph for tensor in output_tensors])
     if flatten:
         graph = flatten_graph(graph)
     if as_networkx:
