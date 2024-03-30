@@ -36,7 +36,7 @@ torchtrail.visualize(output_tensor, file_name="exp.svg")
 
 The graph could be obtained as a `networkx.MultiDiGraph` using `torchtrail.get_graph`:
 ```python
-graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True)
+graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor)
 ```
 
 
@@ -79,7 +79,7 @@ torchtrail.visualize(output, file_name="bert.svg")
 
 The graph could be obtained as a `networkx.MultiDiGraph` using `torchtrail.get_graph`:
 ```python
-graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True)
+graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor)
 ```
 
 Alternatively, visualization of the modules can be turned off completely using `show_modules=False`
@@ -92,7 +92,7 @@ torchtrail.visualize(output, show_modules=False, file_name="bert_show_modules_Fa
 
 The flattened graph could be obtained as a `networkx.MultiDiGraph` using `torchtrail.get_graph`:
 ```python
-graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, as_networkx=True, flatten=True)
+graph: "networkx.MultiDiGraph" = torchtrail.get_graph(output_tensor, flatten=True)
 ```
 
 

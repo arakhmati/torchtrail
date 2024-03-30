@@ -563,6 +563,9 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         node_name = f"{function.__name__}_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
         graph = nx.compose_all([tensor.graph for tensor in input_tensors])
+        for tensor in input_tensors:
+            tensor.graph = graph
+
         graph.add_node(
             node,
             operation=TorchFunction(
@@ -709,6 +712,8 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
         function_kwargs
     )
     graph = nx.compose_all([tensor.graph for tensor in input_tensors])
+    for tensor in input_tensors:
+        tensor.graph = graph
 
     shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
     dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
@@ -1138,17 +1143,15 @@ def process_output(output):
 
 def get_graph(
     value: Union[nx.MultiDiGraph, TracedTensor, Tuple[TracedTensor, ...]],
-    as_networkx: bool = False,
     flatten: bool = False,
 ) -> nx.MultiDiGraph:
     if isinstance(value, nx.MultiDiGraph):
         return value
     output_tensors = process_output(value)
     graph = nx.compose_all([tensor.graph for tensor in output_tensors])
+
     if flatten:
         graph = flatten_graph(graph)
-    if as_networkx:
-        graph = multidigraph.to_networkx(graph)
     return graph
 
 
