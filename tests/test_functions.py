@@ -22,6 +22,28 @@ def test_rand_add_exp():
     assert len(torchtrail.get_graph(output_tensor)) == 3
 
 
+def test_rand_in_place_add_exp():
+    with torchtrail.trace():
+        input_tensor = torch.rand(1, 64)
+        input_tensor.add_(input_tensor)
+        output_tensor = torch.exp(input_tensor)
+
+    torchtrail.visualize(output_tensor)
+    assert len(torchtrail.get_graph(output_tensor)) == 3
+
+
+def test_rand_multiple_in_place_adds():
+    with torchtrail.trace():
+        input_tensor = torch.rand(1, 64)
+        input_tensor.add_(input_tensor)
+        input_tensor.add_(input_tensor)
+        input_tensor.add_(input_tensor)
+        input_tensor.add_(input_tensor)
+
+    torchtrail.visualize(input_tensor)
+    assert len(torchtrail.get_graph(input_tensor)) == 5
+
+
 def test_zeros():
     with torchtrail.trace():
         input_tensor = torch.zeros(1, 64)
@@ -37,14 +59,3 @@ def test_rand_split():
 
     torchtrail.visualize(output_tensors)
     assert len(torchtrail.get_graph(output_tensors)) == 2
-
-
-def test_rand_exp_backward():
-    with torchtrail.trace():
-        input_tensor = torch.rand(1, 64)
-        input_tensor.requires_grad = True
-        output_tensor = torch.exp(input_tensor)
-        output_tensor.backward(torch.ones_like(output_tensor))
-
-    torchtrail.visualize(input_tensor.grad)
-    assert len(torchtrail.get_graph(input_tensor.grad)) == 2

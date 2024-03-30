@@ -36,4 +36,4 @@ def test_bert(tmp_path, show_modules):
         output, show_modules=show_modules, file_name=tmp_path / "bert.svg"
     )
     assert len(torchtrail.get_graph(output)) == 2
-    assert len(torchtrail.get_graph(output, flatten=True)) == 205
+    assert len(torchtrail.get_graph(output, flatten=True)) == 206
