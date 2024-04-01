@@ -3,6 +3,19 @@ import torch
 import torchtrail
 
 
+def test_linear():
+
+    module = torch.nn.Linear(128, 256)
+
+    with torchtrail.trace():
+        input_tensor = torch.rand(64, 128)
+        output = module(input_tensor)
+
+    torchtrail.visualize(output)
+    assert len(torchtrail.get_graph(output)) == 2
+    assert len(torchtrail.get_graph(output, flatten=True)) == 4
+
+
 def test_module_list():
 
     class Module(torch.nn.Module):
