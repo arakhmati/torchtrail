@@ -39,6 +39,34 @@ import torch
 GRAPH_STACK = None
 
 
+def enable_tracing():
+    global GRAPH_STACK
+    if GRAPH_STACK is not None:
+        raise RuntimeError("Cannot nest trace calls")
+
+    setattr(torch.nn.Module, "__call__", traced_module_forward)
+
+    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
+        setattr(torch, name, wrap_create_function(op))
+
+    GRAPH_STACK = [nx.MultiDiGraph()]
+
+
+def disable_tracing():
+    global GRAPH_STACK
+    # Reset monkey-patched module __call__ and torch creation ops
+    setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
+
+    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
+        setattr(torch, name, op)
+
+    GRAPH_STACK = None
+
+
+def is_tracing_enabled():
+    return GRAPH_STACK is not None
+
+
 TORCH_NN_MODULE_CALL = torch.nn.Module.__call__
 
 
@@ -532,6 +560,11 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         function_kwargs: Any = None,
     ) -> Any:
 
+        if not is_tracing_enabled():
+            return super().__torch_function__(
+                function, types, function_args, function_kwargs
+            )
+
         types = tuple(torch.Tensor if t == TorchTensor else t for t in types)
 
         if function_kwargs is None:
@@ -687,7 +720,11 @@ def set_torchtrail_name(module, name):
 
 
 def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
+    if not is_tracing_enabled():
+        return TORCH_NN_MODULE_CALL(*function_args, **function_kwargs)
+
     module = function_args[0]
+
     set_torchtrail_name(module, "")
 
     function_args, function_kwargs = preprocess_args_and_kwargs(
@@ -749,34 +786,6 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
         for output_index, tensor in enumerate(module_output_tensors)
     ]
     return postprocess_return_value(module_return_value, output_tensors)
-
-
-def enable_tracing():
-    global GRAPH_STACK
-    if GRAPH_STACK is not None:
-        raise RuntimeError("Cannot nest trace calls")
-
-    setattr(torch.nn.Module, "__call__", traced_module_forward)
-
-    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
-        setattr(torch, name, wrap_create_function(op))
-
-    GRAPH_STACK = [nx.MultiDiGraph()]
-
-
-def disable_tracing():
-    global GRAPH_STACK
-    # Reset monkey-patched module __call__ and torch creation ops
-    setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
-
-    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
-        setattr(torch, name, op)
-
-    GRAPH_STACK = None
-
-
-def is_tracing_enabled():
-    return GRAPH_STACK is not None
 
 
 @contextmanager
@@ -889,7 +898,7 @@ def visualize_node(
 
     num_columns = max(len(input_tensors), len(output_tensors))
 
-    table_label = label.replace("\n", "<BR/>")
+    table_lable = label.replace("\n", "<BR/>")
     table = f"""<
             <TABLE BORDER="{0}" CELLBORDER="{1}"
             CELLSPACING="{1}" CELLPADDING="{1}">"""
@@ -912,7 +921,7 @@ def visualize_node(
 
     table += f"""
             <TR>
-                <TD ROWSPAN="{rowspan}">{table_label}</TD>
+                <TD ROWSPAN="{rowspan}">{table_lable}</TD>
             """
     if input_tensors:
 
