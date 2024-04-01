@@ -21,3 +21,4 @@
 # SOFTWARE.
 
 from .tracer import trace, visualize, get_graph
+from .codegen import codegen

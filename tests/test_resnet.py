@@ -42,3 +42,6 @@ def test_resnet(tmp_path, show_modules):
     )
     assert len(torchtrail.get_graph(output_tensor)) == 4
     assert len(torchtrail.get_graph(output_tensor, flatten=True)) == 174
+
+    codegen_output = torchtrail.codegen(output_tensor)
+    assert len(codegen_output.split("\n")) == 504

@@ -11,6 +11,9 @@ def test_rand_exp():
     torchtrail.visualize(output_tensor)
     assert len(torchtrail.get_graph(output_tensor)) == 2
 
+    codegen_output = torchtrail.codegen(output_tensor)
+    assert len(codegen_output.split("\n")) == 6
+
 
 def test_rand_add_exp():
     with torchtrail.trace():
@@ -21,6 +24,9 @@ def test_rand_add_exp():
     torchtrail.visualize(output_tensor)
     assert len(torchtrail.get_graph(output_tensor)) == 3
 
+    codegen_output = torchtrail.codegen(output_tensor)
+    assert len(codegen_output.split("\n")) == 7
+
 
 def test_rand_in_place_add_exp():
     with torchtrail.trace():
@@ -30,6 +36,9 @@ def test_rand_in_place_add_exp():
 
     torchtrail.visualize(output_tensor)
     assert len(torchtrail.get_graph(output_tensor)) == 3
+
+    codegen_output = torchtrail.codegen(output_tensor)
+    assert len(codegen_output.split("\n")) == 7
 
 
 def test_rand_multiple_in_place_adds():
@@ -43,6 +52,9 @@ def test_rand_multiple_in_place_adds():
     torchtrail.visualize(input_tensor)
     assert len(torchtrail.get_graph(input_tensor)) == 5
 
+    codegen_output = torchtrail.codegen(input_tensor)
+    assert len(codegen_output.split("\n")) == 9
+
 
 def test_zeros():
     with torchtrail.trace():
@@ -50,6 +62,9 @@ def test_zeros():
 
     torchtrail.visualize(input_tensor)
     assert len(torchtrail.get_graph(input_tensor)) == 1
+
+    codegen_output = torchtrail.codegen(input_tensor)
+    assert len(codegen_output.split("\n")) == 5
 
 
 def test_rand_split():
@@ -59,3 +74,6 @@ def test_rand_split():
 
     torchtrail.visualize(output_tensors)
     assert len(torchtrail.get_graph(output_tensors)) == 2
+
+    codegen_output = torchtrail.codegen(output_tensors)
+    assert len(codegen_output.split("\n")) == 6
