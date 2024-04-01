@@ -22,6 +22,9 @@ def test_bert_attention(tmp_path, show_modules):
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 33
 
+    codegen_output = torchtrail.codegen(output)
+    assert len(codegen_output.split("\n")) == 77
+
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_bert(tmp_path, show_modules):
@@ -37,3 +40,6 @@ def test_bert(tmp_path, show_modules):
     )
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 206
+
+    codegen_output = torchtrail.codegen(output)
+    assert len(codegen_output.split("\n")) == 542

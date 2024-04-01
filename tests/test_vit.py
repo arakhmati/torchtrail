@@ -27,6 +27,8 @@ def test_vit_embeddings(tmp_path, show_modules):
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 11
 
+    codegen_output = torchtrail.codegen(output)
+
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_vit_self_attention(tmp_path, show_modules):
@@ -47,6 +49,8 @@ def test_vit_self_attention(tmp_path, show_modules):
     )
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 25
+
+    codegen_output = torchtrail.codegen(output)
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -70,6 +74,8 @@ def test_vit_self_output(tmp_path, show_modules):
     assert len(torchtrail.get_graph(output)) == 3
     assert len(torchtrail.get_graph(output, flatten=True)) in {6, 7}
 
+    codegen_output = torchtrail.codegen(output)
+
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_vit_attention(tmp_path, show_modules):
@@ -90,6 +96,8 @@ def test_vit_attention(tmp_path, show_modules):
     )
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) in {29, 30}
+
+    codegen_output = torchtrail.codegen(output)
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -112,6 +120,8 @@ def test_vit_intermediate(tmp_path, show_modules):
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 5
 
+    codegen_output = torchtrail.codegen(output)
+
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_vit_layer(tmp_path, show_modules):
@@ -132,6 +142,8 @@ def test_vit_layer(tmp_path, show_modules):
     )
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) in {45, 46}
+
+    codegen_output = torchtrail.codegen(output)
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
@@ -157,6 +169,8 @@ def test_vit_encoder(tmp_path, show_modules):
         541,
     }
 
+    codegen_output = torchtrail.codegen(output)
+
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_vit(tmp_path, show_modules):
@@ -181,3 +195,5 @@ def test_vit(tmp_path, show_modules):
         559 - config.num_hidden_layers,
         559,
     }
+
+    codegen_output = torchtrail.codegen(output)

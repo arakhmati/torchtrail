@@ -15,6 +15,9 @@ def test_linear():
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 4
 
+    codegen_output = torchtrail.codegen(output)
+    assert len(codegen_output.split("\n")) == 12
+
 
 def test_module_list():
 
@@ -39,6 +42,9 @@ def test_module_list():
     torchtrail.visualize(output)
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 13
+
+    codegen_output = torchtrail.codegen(output)
+    assert len(codegen_output.split("\n")) == 37
 
 
 def test_module_list_with_multiple_traces():
@@ -77,3 +83,6 @@ def test_module_list_with_multiple_traces():
     torchtrail.visualize(another_output)
     assert len(torchtrail.get_graph(another_output)) == 3
     assert len(torchtrail.get_graph(another_output, flatten=True)) == 25
+
+    codegen_output = torchtrail.codegen(output)
+    assert len(codegen_output.split("\n")) == 37

@@ -210,12 +210,15 @@ class TorchFunction:
     __repr__ = to_string
 
 
+class TracedTensorTrait: ...
+
+
 @dataclasses.dataclass
 class TorchModule:
     module: torch.nn.Module
     graph: nx.MultiDiGraph
-    inputs: list[TracedTensor]
-    outputs: list[TracedTensor]
+    inputs: list[TracedTensorTrait]
+    outputs: list[TracedTensorTrait]
     arg_name_value_pairs: list
 
     def to_string(self, verbose=False):
@@ -339,7 +342,7 @@ def create_input_tensor(
 
 def preprocess_args_and_kwargs(*function_args, **function_kwargs) -> Any:
     def preprocess_arg(arg: Any) -> Any:
-        if isinstance(arg, TracedTensor):
+        if isinstance(arg, TracedTensorTrait):
             return arg
         elif isinstance(arg, torch.Tensor):
             return create_input_tensor(arg)
@@ -359,7 +362,7 @@ def preprocess_args_and_kwargs(*function_args, **function_kwargs) -> Any:
 
 def get_input_tensors(object):
     input_tensors = []
-    if isinstance(object, TracedTensor):
+    if isinstance(object, TracedTensorTrait):
         input_tensors.append(object)
     elif isinstance(object, (list, tuple)):
         for element in object:
@@ -411,7 +414,7 @@ def get_arg_name_value_pairs(function, *, function_args, function_kwargs):
 
     def process_arg_value(arg_value):
         nonlocal input_tensor_index
-        if isinstance(arg_value, TracedTensor):
+        if isinstance(arg_value, TracedTensorTrait):
             output = InputTensorIndex(index=input_tensor_index)
             input_tensor_index += 1
             return output
@@ -466,7 +469,7 @@ def preprocess_return_value(return_value):
         ),
     ):
         pass
-    elif isinstance(return_value, TracedTensor):
+    elif isinstance(return_value, TracedTensorTrait):
         output_tensors.append(return_value)
     elif isinstance(return_value, torch.Tensor):
         output_tensors.append(create_input_tensor(return_value))
@@ -490,7 +493,7 @@ def preprocess_return_value(return_value):
 
 
 def postprocess_return_value(return_value, output_tensors):
-    if isinstance(return_value, TracedTensor):
+    if isinstance(return_value, TracedTensorTrait):
         output_tensor, *_ = output_tensors
         output_tensors.pop(0)
         return output_tensor
@@ -519,10 +522,7 @@ def postprocess_return_value(return_value, output_tensors):
         return return_value
 
 
-class TracedTensor: ...
-
-
-class TracedTorchTensor(torch.Tensor, TracedTensor):
+class TracedTorchTensor(torch.Tensor, TracedTensorTrait):
     @staticmethod
     def __new__(
         cls: Any,
@@ -561,6 +561,11 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
     ) -> Any:
 
         types = tuple(torch.Tensor if t == TorchTensor else t for t in types)
+
+        if not is_tracing_enabled():
+            return super().__torch_function__(
+                function, types, function_args, function_kwargs
+            )
 
         if not is_tracing_enabled():
             return super().__torch_function__(
@@ -630,7 +635,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
 
 
 def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
-    def wrapper(*function_args: Any, **function_kwargs: Any) -> TracedTensor:
+    def wrapper(*function_args: Any, **function_kwargs: Any) -> TracedTensorTrait:
         arg_name_value_pairs = get_arg_name_value_pairs(
             function, function_args=function_args, function_kwargs=function_kwargs
         )
@@ -648,7 +653,7 @@ def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
+def create_module_input(name, tensor: torch.Tensor) -> TracedTensorTrait:
     unique_id = get_unique_id()
     node_name = f"module_input_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
@@ -664,7 +669,7 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
 
 def convert_to_module_args_and_kwargs(module, *function_args, **function_kwargs) -> Any:
     def preprocess_arg(name: str, arg: Any) -> Any:
-        if isinstance(arg, TracedTensor):
+        if isinstance(arg, TracedTensorTrait):
             output = create_module_input(name, arg)
             return output
         elif isinstance(arg, torch.nn.Parameter):
@@ -1164,7 +1169,7 @@ def flatten_graph(graph) -> nx.MultiDiGraph:
 
 def process_output(output):
     output_tensors = []
-    if isinstance(output, TracedTensor):
+    if isinstance(output, TracedTensorTrait):
         output_tensors.append(output)
     elif isinstance(output, (tuple, list)):
         for value in output:
@@ -1184,7 +1189,7 @@ def process_output(output):
 
 
 def get_graph(
-    value: Union[nx.MultiDiGraph, TracedTensor, Tuple[TracedTensor, ...]],
+    value: Union[nx.MultiDiGraph, TracedTensorTrait, Tuple[TracedTensorTrait, ...]],
     flatten: bool = False,
 ) -> nx.MultiDiGraph:
     if isinstance(value, nx.MultiDiGraph):
@@ -1198,7 +1203,7 @@ def get_graph(
 
 
 def visualize(
-    output: Union[TracedTensor, Tuple[TracedTensor, ...]],
+    output: Union[TracedTensorTrait, Tuple[TracedTensorTrait, ...]],
     *,
     show_modules: bool = True,
     max_depth: Optional[int] = None,
