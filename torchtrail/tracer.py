@@ -36,6 +36,9 @@ from loguru import logger
 import torch
 
 
+GRAPH_STACK = None
+
+
 TORCH_NN_MODULE_CALL = torch.nn.Module.__call__
 
 
@@ -269,7 +272,7 @@ def create_input_tensor(
         unique_id = get_unique_id()
         node_name = f"torch_parameter_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
-        graph = nx.MultiDiGraph()
+        graph = GRAPH_STACK[-1]
         graph.add_node(
             node,
             operation=TorchParameter(parameter=tensor),
@@ -293,7 +296,7 @@ def create_input_tensor(
         node_name = f"torch_input_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
 
-        graph = nx.MultiDiGraph()
+        graph = GRAPH_STACK[-1]
         graph.add_node(
             node,
             operation=operation,
@@ -562,9 +565,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         unique_id = get_unique_id()
         node_name = f"{function.__name__}_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
-        graph = nx.compose_all([tensor.graph for tensor in input_tensors])
-        for tensor in input_tensors:
-            tensor.graph = graph
+        graph = GRAPH_STACK[-1]
 
         graph.add_node(
             node,
@@ -613,7 +614,7 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTensor:
     unique_id = get_unique_id()
     node_name = f"module_input_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
-    graph = nx.MultiDiGraph()
+    graph = GRAPH_STACK[-1]
     graph.add_node(
         node,
         operation=TorchModuleInput(name=name),
@@ -658,9 +659,7 @@ def create_module(
     module_outputs = [
         ModuleIOTensor.from_traced_tensor(tensor) for tensor in module_output_tensors
     ]
-    module_graph = nx.compose_all(
-        [tensor.graph for tensor in module_inputs + module_outputs]
-    )
+    module_graph = GRAPH_STACK[-1]
     operation = TorchModule(
         module=module,
         graph=module_graph,
@@ -695,6 +694,7 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
         *function_args, **function_kwargs
     )
 
+    GRAPH_STACK.append(nx.MultiDiGraph())
     module_args, module_kwargs = convert_to_module_args_and_kwargs(
         module, *function_args, **function_kwargs
     )
@@ -708,12 +708,6 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
         module_kwargs
     )
     module_output_tensors = preprocess_return_value(module_return_value)
-    input_tensors = get_input_tensors(function_args) + get_input_tensors(
-        function_kwargs
-    )
-    graph = nx.compose_all([tensor.graph for tensor in input_tensors])
-    for tensor in input_tensors:
-        tensor.graph = graph
 
     shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
     dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
@@ -724,11 +718,13 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     operation = create_module(
         module, module_input_tensors, module_output_tensors, arg_name_value_pairs
     )
+    GRAPH_STACK.pop()
 
     unique_id = get_unique_id()
     node_name = f"{module.torchtrail_name}_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
 
+    graph = GRAPH_STACK[-1]
     graph.add_node(
         node,
         operation=operation,
@@ -737,6 +733,9 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
         duration=duration,
     )
 
+    input_tensors = get_input_tensors(function_args) + get_input_tensors(
+        function_kwargs
+    )
     for input_index, tensor in enumerate(input_tensors):
         graph.add_edge(
             tensor.node,
@@ -752,24 +751,41 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     return postprocess_return_value(module_return_value, output_tensors)
 
 
+def enable_tracing():
+    global GRAPH_STACK
+    if GRAPH_STACK is not None:
+        raise RuntimeError("Cannot nest trace calls")
+
+    setattr(torch.nn.Module, "__call__", traced_module_forward)
+
+    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
+        setattr(torch, name, wrap_create_function(op))
+
+    GRAPH_STACK = [nx.MultiDiGraph()]
+
+
+def disable_tracing():
+    global GRAPH_STACK
+    # Reset monkey-patched module __call__ and torch creation ops
+    setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
+
+    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
+        setattr(torch, name, op)
+
+    GRAPH_STACK = None
+
+
+def is_tracing_enabled():
+    return GRAPH_STACK is not None
+
+
 @contextmanager
 def trace():
     try:
-
-        # Monkey-patch module __call__ and torch creation ops
-        setattr(torch.nn.Module, "__call__", traced_module_forward)
-
-        for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
-            setattr(torch, name, wrap_create_function(op))
-
+        enable_tracing()
         yield
-
     finally:
-        # Reset monkey-patched module __call__ and torch creation ops
-        setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
-
-        for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
-            setattr(torch, name, op)
+        disable_tracing()
 
 
 LEVEL_COLORS = [
@@ -873,13 +889,10 @@ def visualize_node(
 
     num_columns = max(len(input_tensors), len(output_tensors))
 
-    table = label.replace("\n", "<BR/>")
+    table_label = label.replace("\n", "<BR/>")
     table = f"""<
             <TABLE BORDER="{0}" CELLBORDER="{1}"
-            CELLSPACING="{1}" CELLPADDING="{1}">
-            <TR>
-                <TD ROWSPAN="{2 if input_tensors else 1}">{table}</TD>
-            """
+            CELLSPACING="{1}" CELLPADDING="{1}">"""
 
     def compute_even_column_sizes(num_columns, num_tensors):
         if num_tensors == 0:
@@ -895,28 +908,37 @@ def visualize_node(
             remaining -= column_size
         return column_sizes
 
-    input_column_sizes = compute_even_column_sizes(num_columns, len(input_tensors))
-    for index, (shape, dtype) in enumerate(input_tensors):
-        column_size = input_column_sizes[index]
-        table = (
-            table
-            + f"""
-                <TD PORT="${index}" COLSPAN="{column_size}">Input {index}<BR/>{shape}<BR/>{dtype}</TD>
-            """
-        )
-    table += """
-            </TR>
-            <TR>
-            """
-    output_column_sizes = compute_even_column_sizes(num_columns, len(output_tensors))
-    for index, (shape, dtype) in enumerate(output_tensors):
-        column_size = output_column_sizes[index]
-        table += f"""
-                <TD PORT="#{index}" COLSPAN="{column_size}">Output {index}<BR/>{shape}<BR/>{dtype}</TD>
-            """
+    rowspan = 2 if input_tensors and output_tensors else 1
+
     table += f"""
-            </TR>
-            </TABLE>>"""
+            <TR>
+                <TD ROWSPAN="{rowspan}">{table_label}</TD>
+            """
+    if input_tensors:
+
+        input_column_sizes = compute_even_column_sizes(num_columns, len(input_tensors))
+        for index, (shape, dtype) in enumerate(input_tensors):
+            column_size = input_column_sizes[index]
+            table = (
+                table
+                + f"""
+                    <TD PORT="${index}" COLSPAN="{column_size}">Input {index}<BR/>{shape}<BR/>{dtype}</TD>
+                """
+            )
+    table += "</TR>"
+
+    if output_tensors:
+        table += "<TR>"
+        output_column_sizes = compute_even_column_sizes(
+            num_columns, len(output_tensors)
+        )
+        for index, (shape, dtype) in enumerate(output_tensors):
+            column_size = output_column_sizes[index]
+            table += f"""
+                    <TD PORT="#{index}" COLSPAN="{column_size}">Output {index}<BR/>{shape}<BR/>{dtype}</TD>
+                """
+        table += "</TR>"
+    table += "</TABLE>>"
 
     if isinstance(operation, TorchModule):
         color = LEVEL_COLORS[level % len(LEVEL_COLORS)]
