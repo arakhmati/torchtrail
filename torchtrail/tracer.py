@@ -560,12 +560,12 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         function_kwargs: Any = None,
     ) -> Any:
 
+        types = tuple(torch.Tensor if t == TorchTensor else t for t in types)
+
         if not is_tracing_enabled():
             return super().__torch_function__(
                 function, types, function_args, function_kwargs
             )
-
-        types = tuple(torch.Tensor if t == TorchTensor else t for t in types)
 
         if function_kwargs is None:
             function_kwargs = {}
@@ -598,7 +598,12 @@ class TracedTorchTensor(torch.Tensor, TracedTensor):
         unique_id = get_unique_id()
         node_name = f"{function.__name__}_{unique_id}"
         node = Node(name=node_name, unique_id=unique_id)
+
         graph = GRAPH_STACK[-1]
+        for tensor in input_tensors:
+            if tensor.graph is not graph:
+                graph = nx.compose(graph, tensor.graph)
+                GRAPH_STACK[-1] = graph
 
         graph.add_node(
             node,
@@ -761,7 +766,16 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     node_name = f"{module.torchtrail_name}_{unique_id}"
     node = Node(name=node_name, unique_id=unique_id)
 
+    input_tensors = get_input_tensors(function_args) + get_input_tensors(
+        function_kwargs
+    )
+
     graph = GRAPH_STACK[-1]
+    for tensor in input_tensors:
+        if tensor.graph is not graph:
+            graph = nx.compose(graph, tensor.graph)
+            GRAPH_STACK[-1] = graph
+
     graph.add_node(
         node,
         operation=operation,
@@ -770,9 +784,6 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
         duration=duration,
     )
 
-    input_tensors = get_input_tensors(function_args) + get_input_tensors(
-        function_kwargs
-    )
     for input_index, tensor in enumerate(input_tensors):
         graph.add_edge(
             tensor.node,
