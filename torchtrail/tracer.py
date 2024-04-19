@@ -39,34 +39,6 @@ import torch
 GRAPH_STACK = None
 
 
-def enable_tracing():
-    global GRAPH_STACK
-    if GRAPH_STACK is not None:
-        raise RuntimeError("Cannot nest trace calls")
-
-    setattr(torch.nn.Module, "__call__", traced_module_forward)
-
-    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
-        setattr(torch, name, wrap_create_function(op))
-
-    GRAPH_STACK = [nx.MultiDiGraph()]
-
-
-def disable_tracing():
-    global GRAPH_STACK
-    # Reset monkey-patched module __call__ and torch creation ops
-    setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
-
-    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
-        setattr(torch, name, op)
-
-    GRAPH_STACK = None
-
-
-def is_tracing_enabled():
-    return GRAPH_STACK is not None
-
-
 TORCH_NN_MODULE_CALL = torch.nn.Module.__call__
 
 
@@ -106,6 +78,37 @@ TORCH_CREATION_OPERATIONS = [
 ]
 
 
+def enable_tracing():
+    global GRAPH_STACK
+    if GRAPH_STACK is not None:
+        raise RuntimeError("Cannot nest trace calls")
+
+    setattr(torch.nn.Module, "__call__", traced_module_forward)
+
+    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
+        setattr(torch, name, wrap_create_function(op))
+
+    GRAPH_STACK = [nx.MultiDiGraph()]
+
+
+def disable_tracing():
+    global GRAPH_STACK
+    # Reset monkey-patched module __call__ and torch creation ops
+    setattr(torch.nn.Module, "__call__", TORCH_NN_MODULE_CALL)
+
+    for name, op in zip(TORCH_CREATION_OPERATION_NAMES, TORCH_CREATION_OPERATIONS):
+        setattr(torch, name, op)
+
+    GRAPH_STACK = None
+
+
+def is_tracing_enabled():
+    return GRAPH_STACK is not None
+
+
+class TracedTensorTrait: ...
+
+
 @dataclasses.dataclass
 class Node:
     name: str
@@ -116,17 +119,6 @@ class Node:
 
     def __lt__(self, other):
         return self.unique_id < other.unique_id
-
-
-@dataclasses.dataclass
-class PositionalArgumentName:
-    index: int
-
-    def __repr__(self):
-        return f"{self.index}"
-
-    def __hash__(self):
-        return hash(self.index)
 
 
 @dataclasses.dataclass
@@ -163,7 +155,7 @@ class TorchParameter:
 @dataclasses.dataclass
 class TorchFunction:
     function: Any
-    arg_name_value_pairs: list
+    arguments: list
 
     def to_string(self, verbose=False):
         if "__module__" in dir(self.function):
@@ -188,16 +180,15 @@ class TorchFunction:
         if current_length > 50:
             output += "\n"
             current_length = 0
-        for index, (name, value) in enumerate(self.arg_name_value_pairs):
-            if isinstance(value, torch.Tensor):
-                value = f"torch.Tensor(...)"
-            elif isinstance(name, PositionalArgumentName):
+        for index, argument in enumerate(self.arguments):
+            name, value = argument
+            if isinstance(name, int):
                 value_as_str = f"{value}"
             else:
                 value_as_str = f"{name}={value}"
             current_length += len(value_as_str)
             output += value_as_str
-            if index != len(self.arg_name_value_pairs) - 1:
+            if index != len(self.arguments) - 1:
                 if current_length < 50:
                     output += ", "
                 else:
@@ -210,16 +201,13 @@ class TorchFunction:
     __repr__ = to_string
 
 
-class TracedTensorTrait: ...
-
-
 @dataclasses.dataclass
 class TorchModule:
     module: torch.nn.Module
     graph: nx.MultiDiGraph
     inputs: list[TracedTensorTrait]
     outputs: list[TracedTensorTrait]
-    arg_name_value_pairs: list
+    arguments: list
 
     def to_string(self, verbose=False):
         output = f"{type(self.module).__module__}.{type(self.module).__name__}"
@@ -230,15 +218,16 @@ class TorchModule:
             if current_length > 50:
                 output += "\n"
                 current_length = 0
-            for index, (name, value) in enumerate(self.arg_name_value_pairs):
-                if isinstance(name, PositionalArgumentName):
+            for index, argument in enumerate(self.arguments):
+                name, value = argument
+                if isinstance(name, int):
                     value_as_str = f"{value}"
                 else:
                     value_as_str = f"{name}={value}"
 
                 current_length += len(value_as_str)
                 output += value_as_str
-                if index != len(self.arg_name_value_pairs) - 1:
+                if index != len(self.arguments) - 1:
                     if current_length < 50:
                         output += ", "
                     else:
@@ -296,7 +285,7 @@ def get_unique_id():
 def create_input_tensor(
     tensor: torch.Tensor,
     function: Optional[Callable[..., Any]] = None,
-    arg_name_value_pairs=None,
+    arguments=None,
     duration=None,
 ) -> TracedTorchTensor:
     if isinstance(tensor, torch.nn.Parameter):
@@ -316,12 +305,8 @@ def create_input_tensor(
         if function is None:
             operation = TorchTensor(tensor=tensor)
         else:
-            arg_name_value_pairs = (
-                arg_name_value_pairs if arg_name_value_pairs is not None else {}
-            )
-            operation = TorchFunction(
-                function=function, arg_name_value_pairs=arg_name_value_pairs
-            )
+            arguments = arguments if arguments is not None else {}
+            operation = TorchFunction(function=function, arguments=arguments)
 
         unique_id = get_unique_id()
         node_name = f"torch_input_{unique_id}"
@@ -341,21 +326,21 @@ def create_input_tensor(
 
 
 def preprocess_args_and_kwargs(*function_args, **function_kwargs) -> Any:
-    def preprocess_arg(arg: Any) -> Any:
-        if isinstance(arg, TracedTensorTrait):
-            return arg
-        elif isinstance(arg, torch.Tensor):
-            return create_input_tensor(arg)
-        elif isinstance(arg, (tuple, list)):
-            return type(arg)([preprocess_arg(element) for element in arg])
-        elif isinstance(arg, dict):
-            return {key: preprocess_arg(value) for key, value in arg.items()}
+    def preprocess_arg(argument: Any) -> Any:
+        if isinstance(argument, TracedTensorTrait):
+            return argument
+        elif isinstance(argument, torch.Tensor):
+            return create_input_tensor(argument)
+        elif isinstance(argument, (tuple, list)):
+            return type(argument)([preprocess_arg(element) for element in argument])
+        elif isinstance(argument, dict):
+            return {key: preprocess_arg(value) for key, value in argument.items()}
         else:
-            return arg
+            return argument
 
-    function_args = [preprocess_arg(arg) for arg in function_args]
+    function_args = [preprocess_arg(argument) for argument in function_args]
     function_kwargs = {
-        name: preprocess_arg(arg) for name, arg in function_kwargs.items()
+        name: preprocess_arg(argument) for name, argument in function_kwargs.items()
     }
     return function_args, function_kwargs
 
@@ -373,42 +358,27 @@ def get_input_tensors(object):
     return input_tensors
 
 
-def get_arg_names(function, *, function_args, function_kwargs):
-    if inspect.isbuiltin(function):
-        arg_names = [
-            PositionalArgumentName(index=index) for index in range(len(function_args))
-        ] + list(function_kwargs.keys())
-    elif inspect.ismethoddescriptor(function):
-        arg_names = [
-            PositionalArgumentName(index=index) for index in range(len(function_args))
-        ] + list(function_kwargs.keys())
-    else:
-        signature = inspect.signature(function)
-        arg_names = [parameter.name for parameter in signature.parameters.values()]
-        if inspect.ismethod(function):
-            arg_names = ["self"] + arg_names
-        if len(arg_names) < len(function_args) + len(function_kwargs):
-            arg_names = [
-                PositionalArgumentName(index=index)
-                for index in range(len(function_args))
-            ] + list(function_kwargs.keys())
+def get_argument_names(function, *, function_args, function_kwargs):
+    argument_names = list(range(len(function_args))) + list(function_kwargs.keys())
 
-    if len(arg_names) < len(function_args) + len(function_kwargs):
-        raise RuntimeError(
-            f"Number of argument names must be at least as large as the number of arguments"
-        )
-    return arg_names
-
-
-def get_arg_name_value_pairs(function, *, function_args, function_kwargs):
-    arg_names = get_arg_names(
-        function, function_args=function_args, function_kwargs=function_kwargs
-    )
+    if inspect.isbuiltin(function) or inspect.ismethoddescriptor(function):
+        return argument_names
 
     try:
         signature = inspect.signature(function)
-    except:
-        signature = None
+        argument_names = [parameter.name for parameter in signature.parameters.values()]
+        if inspect.ismethod(function):
+            argument_names = ["self"] + argument_names
+    except Exception as e:
+        logger.warning(f"Failed to get argument names using inspect.signature. {e}")
+
+    return argument_names
+
+
+def get_arguments(function, *, function_args, function_kwargs):
+    argument_names = get_argument_names(
+        function, function_args=function_args, function_kwargs=function_kwargs
+    )
 
     input_tensor_index = 0
 
@@ -427,33 +397,19 @@ def get_arg_name_value_pairs(function, *, function_args, function_kwargs):
         else:
             return arg_value
 
-    arg_name_value_pairs = []
-    for arg_name, arg_value in zip(arg_names, function_args):
+    arguments = []
+    for index, argument_name in enumerate(argument_names):
+        if isinstance(argument_name, int) and argument_name < len(function_args):
+            arg_value = function_args[argument_name]
+            arguments.append((argument_name, process_arg_value(arg_value)))
+        elif argument_name in function_kwargs:
+            arg_value = function_kwargs[argument_name]
+            arguments.append((argument_name, process_arg_value(arg_value)))
+        elif index < len(function_args):
+            arg_value = function_args[index]
+            arguments.append((argument_name, process_arg_value(arg_value)))
 
-        if signature is not None:
-            if (
-                arg_name in signature.parameters
-                and signature.parameters[arg_name].default != inspect.Parameter.empty
-                and arg_value == signature.parameters[arg_name].default
-            ):
-                continue
-        arg_name_value_pairs.append((arg_name, process_arg_value(arg_value)))
-
-    for arg_name in arg_names[len(function_args) :]:
-        if arg_name not in function_kwargs:
-            continue
-        arg_value = function_kwargs[arg_name]
-
-        if signature is not None:
-            if (
-                arg_name in signature.parameters
-                and signature.parameters[arg_name].default != inspect.Parameter.empty
-                and arg_value == signature.parameters[arg_name].default
-            ):
-                continue
-        arg_name_value_pairs.append((arg_name, process_arg_value(arg_value)))
-
-    return arg_name_value_pairs
+    return arguments
 
 
 def preprocess_return_value(return_value):
@@ -567,19 +523,11 @@ class TracedTorchTensor(torch.Tensor, TracedTensorTrait):
                 function, types, function_args, function_kwargs
             )
 
-        if not is_tracing_enabled():
-            return super().__torch_function__(
-                function, types, function_args, function_kwargs
-            )
-
         if function_kwargs is None:
             function_kwargs = {}
 
         function_args, function_kwargs = preprocess_args_and_kwargs(
             *function_args, **function_kwargs
-        )
-        input_tensors = get_input_tensors(function_args) + get_input_tensors(
-            function_kwargs
         )
 
         start_time = time.time()
@@ -596,7 +544,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensorTrait):
         shapes = tuple(tuple(tensor.shape) for tensor in output_tensors)
         dtypes = tuple(tensor.dtype for tensor in output_tensors)
 
-        arg_name_value_pairs = get_arg_name_value_pairs(
+        arguments = get_arguments(
             function, function_args=function_args, function_kwargs=function_kwargs
         )
 
@@ -605,6 +553,9 @@ class TracedTorchTensor(torch.Tensor, TracedTensorTrait):
         node = Node(name=node_name, unique_id=unique_id)
 
         graph = GRAPH_STACK[-1]
+        input_tensors = get_input_tensors(function_args) + get_input_tensors(
+            function_kwargs
+        )
         for tensor in input_tensors:
             if tensor.graph is not graph:
                 graph = nx.compose(graph, tensor.graph)
@@ -612,9 +563,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensorTrait):
 
         graph.add_node(
             node,
-            operation=TorchFunction(
-                function=function, arg_name_value_pairs=arg_name_value_pairs
-            ),
+            operation=TorchFunction(function=function, arguments=arguments),
             shapes=shapes,
             dtypes=dtypes,
             duration=duration,
@@ -636,7 +585,7 @@ class TracedTorchTensor(torch.Tensor, TracedTensorTrait):
 
 def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*function_args: Any, **function_kwargs: Any) -> TracedTensorTrait:
-        arg_name_value_pairs = get_arg_name_value_pairs(
+        arguments = get_arguments(
             function, function_args=function_args, function_kwargs=function_kwargs
         )
         start_time = time.time()
@@ -646,7 +595,7 @@ def wrap_create_function(function: Callable[..., Any]) -> Callable[..., Any]:
         return create_input_tensor(
             input_tensor,
             function,
-            arg_name_value_pairs=arg_name_value_pairs,
+            arguments=arguments,
             duration=duration,
         )
 
@@ -668,34 +617,38 @@ def create_module_input(name, tensor: torch.Tensor) -> TracedTensorTrait:
 
 
 def convert_to_module_args_and_kwargs(module, *function_args, **function_kwargs) -> Any:
-    def preprocess_arg(name: str, arg: Any) -> Any:
-        if isinstance(arg, TracedTensorTrait):
-            output = create_module_input(name, arg)
+    def preprocess_arg(name: str, argument: Any) -> Any:
+        if isinstance(argument, TracedTensorTrait):
+            output = create_module_input(name, argument)
             return output
-        elif isinstance(arg, torch.nn.Parameter):
+        elif isinstance(argument, torch.nn.Parameter):
             raise RuntimeError("Module parameters are not supported")
-        elif isinstance(arg, (tuple, list)):
-            return type(arg)([preprocess_arg(name, element) for element in arg])
-        elif isinstance(arg, dict):
-            return {key: preprocess_arg(name, element) for key, element in arg.items()}
+        elif isinstance(argument, (tuple, list)):
+            return type(argument)(
+                [preprocess_arg(name, element) for element in argument]
+            )
+        elif isinstance(argument, dict):
+            return {
+                key: preprocess_arg(name, element) for key, element in argument.items()
+            }
         else:
-            return arg
+            return argument
 
-    arg_names = get_arg_names(
+    argument_names = get_argument_names(
         module.forward, function_args=function_args, function_kwargs=function_kwargs
     )
     function_args = [
-        preprocess_arg(name, arg) for name, arg in zip(arg_names, function_args)
+        preprocess_arg(name, argument)
+        for name, argument in zip(argument_names, function_args)
     ]
     function_kwargs = {
-        name: preprocess_arg(name, arg) for name, arg in function_kwargs.items()
+        name: preprocess_arg(name, argument)
+        for name, argument in function_kwargs.items()
     }
     return function_args, function_kwargs
 
 
-def create_module(
-    module, module_input_tensors, module_output_tensors, arg_name_value_pairs
-):
+def create_module(module, module_input_tensors, module_output_tensors, arguments):
     module_inputs = [
         ModuleIOTensor.from_traced_tensor(tensor) for tensor in module_input_tensors
     ]
@@ -708,7 +661,7 @@ def create_module(
         graph=module_graph,
         inputs=module_inputs,
         outputs=module_outputs,
-        arg_name_value_pairs=arg_name_value_pairs,
+        arguments=arguments,
     )
     return operation
 
@@ -759,11 +712,11 @@ def traced_module_forward(*function_args: Any, **function_kwargs: Any) -> Any:
     shapes = tuple(tuple(tensor.shape) for tensor in module_output_tensors)
     dtypes = tuple(tensor.dtype for tensor in module_output_tensors)
 
-    arg_name_value_pairs = get_arg_name_value_pairs(
+    arguments = get_arguments(
         module.forward, function_args=function_args, function_kwargs=function_kwargs
     )[1:]
     operation = create_module(
-        module, module_input_tensors, module_output_tensors, arg_name_value_pairs
+        module, module_input_tensors, module_output_tensors, arguments
     )
     GRAPH_STACK.pop()
 

@@ -20,7 +20,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from typing import Any
 import io
 
 import networkx as nx
@@ -59,26 +58,10 @@ def get_module_name(operation):
     return output
 
 
-def extract_args_and_kwargs_from_arg_name_value_pairs(arg_name_value_pairs) -> Any:
-    function_args = []
-    function_kwargs = []
-    for arg_name, arg in arg_name_value_pairs:
-        if isinstance(arg_name, torchtrail.tracer.PositionalArgumentName):
-            if not isinstance(arg, torchtrail.tracer.InputTensorIndex):
-                function_args.append(f"{arg}")
-            else:
-                function_args.append(f"{arg_name}")
-        else:
-            if not isinstance(arg, torchtrail.tracer.InputTensorIndex):
-                function_kwargs.append(f"{arg_name}={arg}")
-            else:
-                function_kwargs.append(f"{arg_name}={arg_name}")
-
-
 def node_to_statement(
-    string_io, graph, node, output_variables, input_variables, prefix
+    string_io, graph, node, input_variables, output_variables, prefix
 ):
-    def process_arg_name_values(arg_name_values):
+    def process_arguments(argument_name_values):
         def process_value(value):
             if isinstance(value, torchtrail.tracer.InputTensorIndex):
                 return input_variables[value.index]
@@ -93,36 +76,38 @@ def node_to_statement(
             else:
                 return f"{value}"
 
-        return [(name, process_value(value)) for name, value in arg_name_values]
+        return [(name, process_value(value)) for name, value in argument_name_values]
 
     operation = graph.nodes[node]["operation"]
     shapes = graph.nodes[node]["shapes"]
     dtypes = graph.nodes[node]["dtypes"]
     duration = graph.nodes[node].get("duration", None)
 
-    if output_variables is None:
-        lsh = ""
+    if not output_variables:
+        assignment_statement = ""
     elif len(output_variables) == 1:
-        lsh = f"{output_variables[0]} = "
+        assignment_statement = f"{output_variables[0]} = "
     else:
-        lsh = f"{', '.join(output_variables)} = "
+        assignment_statement = f"{', '.join(output_variables)} = "
 
     if isinstance(operation, torchtrail.tracer.TorchParameter):
         torchtrail_name = operation.parameter.torchtrail_name
         torchtrail_name = torchtrail_name.replace(f"{prefix}.", "", 1)
-        string_io.write(f"    {lsh}parameters.{torchtrail_name}")
+        string_io.write(f"    {assignment_statement}parameters.{torchtrail_name}")
+
     elif isinstance(operation, torchtrail.tracer.TorchTensor):
         string_io.write(
-            f"    {lsh}torch.as_tensor({operation.tensor.flatten().tolist()[:8]}, ...).reshape({tuple(operation.tensor.shape)}).to({operation.tensor.dtype})"
+            f"    {assignment_statement}torch.as_tensor({operation.tensor.flatten().tolist()[:8]}, ...).reshape({tuple(operation.tensor.shape)}).to({operation.tensor.dtype})"
         )
+
     elif isinstance(operation, torchtrail.tracer.TorchFunction):
         function_args = []
         function_kwargs = []
-        for arg_name, arg in process_arg_name_values(operation.arg_name_value_pairs):
-            if isinstance(arg_name, torchtrail.tracer.PositionalArgumentName):
-                function_args.append(f"{arg}")
+        for argument_name, argument in process_arguments(operation.arguments):
+            if isinstance(argument_name, int):
+                function_args.append(f"{argument}")
             else:
-                function_kwargs.append(f"{arg_name}={arg}")
+                function_kwargs.append(f"{argument_name}={argument}")
 
         arguments_string = []
         if function_args:
@@ -131,7 +116,7 @@ def node_to_statement(
             arguments_string.append(", ".join(function_kwargs))
         arguments_string = ", ".join(arguments_string)
 
-        string_io.write(f"    {lsh}{operation}({arguments_string})")
+        string_io.write(f"    {assignment_statement}{operation}({arguments_string})")
 
     elif isinstance(operation, torchtrail.tracer.TorchModule):
         module_name = get_module_name(operation)
@@ -140,11 +125,11 @@ def node_to_statement(
 
         function_args = []
         function_kwargs = []
-        for arg_name, arg in process_arg_name_values(operation.arg_name_value_pairs):
-            if isinstance(arg_name, torchtrail.tracer.PositionalArgumentName):
-                function_args.append(f"{arg}")
+        for argument_name, argument in process_arguments(operation.arguments):
+            if isinstance(argument_name, int):
+                function_args.append(f"{argument}")
             else:
-                function_kwargs.append(f"{arg_name}={arg}")
+                function_kwargs.append(f"{argument_name}={argument}")
 
         arguments_string = []
         if function_args:
@@ -155,13 +140,12 @@ def node_to_statement(
 
         if torchtrail_name == "":
             string_io.write(
-                f"    {lsh}{module_name}(config, {arguments_string}, parameters=parameters)"
+                f"    {assignment_statement}{module_name}(config, {arguments_string}, parameters=parameters)"
             )
         else:
             string_io.write(
-                f"    {lsh}{module_name}(config, {arguments_string}, parameters=parameters.{torchtrail_name})"
+                f"    {assignment_statement}{module_name}(config, {arguments_string}, parameters=parameters.{torchtrail_name})"
             )
-
     else:
         raise ValueError(f"Unknown operation type: {operation}")
 
@@ -221,14 +205,6 @@ def module_to_source_code(string_io, module_operation, prefix=""):
             for input_node, edge_data in input_nodes
         ]
 
-        create_new_variable = True
-        # if len(input_nodes) == 1 and node not in module_output_nodes:
-        #     input_node = input_nodes[0]
-        #     if len(list(graph.successors(input_node))) == 1:
-        #         create_new_variable = False
-        #         variable = input_variables[0]
-        #         node_output_to_variable[(node, )] = variable
-
         output_variables = []
         for output_index, _ in enumerate(graph.nodes[node]["shapes"]):
             variable = f"variable_{index}"
@@ -237,7 +213,7 @@ def module_to_source_code(string_io, module_operation, prefix=""):
             node_output_to_variable[(node, output_index)] = variable
 
         node_to_statement(
-            string_io, graph, node, output_variables, input_variables, prefix
+            string_io, graph, node, input_variables, output_variables, prefix
         )
 
     return_statement(
@@ -277,7 +253,7 @@ def codegen_top_level(string_io, graph, output, top_level_name):
             output_variables.append(variable)
             node_output_to_variable[(node, output_index)] = variable
         node_to_statement(
-            string_io, graph, node, output_variables, input_variables, prefix=""
+            string_io, graph, node, input_variables, output_variables, prefix=""
         )
 
     output_tensors = torchtrail.tracer.process_output(output)
