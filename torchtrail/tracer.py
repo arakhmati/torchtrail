@@ -867,7 +867,7 @@ def visualize_node(
 
     num_columns = max(len(input_tensors), len(output_tensors))
 
-    table_lable = label.replace("\n", "<BR/>")
+    table_label = label.replace("\n", "<BR/>")
     table = f"""<
             <TABLE BORDER="{0}" CELLBORDER="{1}"
             CELLSPACING="{1}" CELLPADDING="{1}">"""
@@ -890,7 +890,7 @@ def visualize_node(
 
     table += f"""
             <TR>
-                <TD ROWSPAN="{rowspan}">{table_lable}</TD>
+                <TD ROWSPAN="{rowspan}">{table_label}</TD>
             """
     if input_tensors:
 
