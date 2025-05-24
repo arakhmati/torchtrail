@@ -8,4 +8,3 @@ def test_nested_trace_error():
         with pytest.raises(RuntimeError):
             with torchtrail.trace():
                 pass
-
