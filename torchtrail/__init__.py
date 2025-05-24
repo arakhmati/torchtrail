@@ -20,5 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from .tracer import trace, visualize, get_graph
+from .tracer import trace, visualize, get_graph, create_input_tensor
+
+# expose create_input_tensor under a simpler name for convenience
+create_input = create_input_tensor
 from .codegen import codegen
