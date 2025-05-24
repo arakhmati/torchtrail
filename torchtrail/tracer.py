@@ -325,6 +325,15 @@ def create_input_tensor(
         raise RuntimeError(f"Unknown input type: {type(tensor)}")
 
 
+def create_input(tensor: torch.Tensor) -> TracedTorchTensor:
+    """Register a tensor created outside the trace as an input."""
+
+    if not is_tracing_enabled():
+        raise RuntimeError("Tracing must be enabled to call create_input")
+
+    return create_input_tensor(tensor)
+
+
 def preprocess_args_and_kwargs(*function_args, **function_kwargs) -> Any:
     def preprocess_arg(argument: Any) -> Any:
         if isinstance(argument, TracedTensorTrait):
