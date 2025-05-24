@@ -1,36 +1,16 @@
 import pytest
 
-import urllib
-
 import torch
-from PIL import Image
-from torchvision import transforms
+from torchvision import models
 
 import torchtrail
 
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_resnet(tmp_path, show_modules):
-    model = torch.hub.load("pytorch/vision:v0.10.0", "resnet18", pretrained=True).eval()
+    model = models.resnet18(weights=None).eval()
 
-    url = "https://github.com/pytorch/hub/raw/master/images/dog.jpg"
-    filename = tmp_path / "dog.jpg"
-
-    try:
-        urllib.URLopener().retrieve(url, filename)
-    except Exception:
-        urllib.request.urlretrieve(url, filename)
-
-    input_image = Image.open(filename)
-    preprocess = transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-    input_tensor = preprocess(input_image).unsqueeze(0)
+    input_tensor = torch.randn(1, 3, 224, 224)
 
     with torchtrail.trace():
         input_tensor = torch.as_tensor(input_tensor)

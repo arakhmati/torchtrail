@@ -52,7 +52,7 @@ def get_module_name(operation):
 
     output = f"{type(module).__name__}"
     if hasattr(module, "torchtrail_name"):
-        if module.torchtrail_name is not "":
+        if module.torchtrail_name != "":
             torchtrail_name = module.torchtrail_name.replace(".", "_")
             return f"{output}_{torchtrail_name}"
     return output

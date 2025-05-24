@@ -8,13 +8,19 @@ import torchtrail
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_vit_embeddings(tmp_path, show_modules):
-    model_name = "google/vit-base-patch16-224"
     batch_size = 1
     num_channels = 3
     height = 224
     width = 224
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTEmbeddings(config).eval()
 
     with torchtrail.trace():
@@ -37,7 +43,14 @@ def test_vit_self_attention(tmp_path, show_modules):
     sequence_size = 197
     hidden_size = 768
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTSelfAttention(config).eval()
 
     with torchtrail.trace():
@@ -60,7 +73,14 @@ def test_vit_self_output(tmp_path, show_modules):
     sequence_size = 197
     hidden_size = 768
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTSelfOutput(config).eval()
 
     with torchtrail.trace():
@@ -84,7 +104,14 @@ def test_vit_attention(tmp_path, show_modules):
     sequence_size = 197
     hidden_size = 768
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTAttention(config).eval()
 
     with torchtrail.trace():
@@ -107,7 +134,14 @@ def test_vit_intermediate(tmp_path, show_modules):
     sequence_size = 197
     hidden_size = 768
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTIntermediate(config).eval()
 
     with torchtrail.trace():
@@ -130,7 +164,14 @@ def test_vit_layer(tmp_path, show_modules):
     sequence_size = 197
     hidden_size = 768
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTLayer(config).eval()
 
     with torchtrail.trace():
@@ -153,7 +194,14 @@ def test_vit_encoder(tmp_path, show_modules):
     sequence_size = 197
     hidden_size = 768
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTEncoder(config).eval()
 
     with torchtrail.trace():
@@ -180,7 +228,14 @@ def test_vit(tmp_path, show_modules):
     height = 224
     width = 224
 
-    config = transformers.ViTConfig.from_pretrained(model_name)
+    config = transformers.ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_hidden_layers=12,
+        hidden_size=768,
+        intermediate_size=3072,
+        num_attention_heads=12,
+    )
     model = transformers.models.vit.modeling_vit.ViTModel(config).eval()
 
     with torchtrail.trace():

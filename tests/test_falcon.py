@@ -9,12 +9,16 @@ import torchtrail
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_falcon_decoder_layer(tmp_path, show_modules):
 
-    model_name = "tiiuae/falcon-7b-instruct"
-    config = transformers.FalconConfig.from_pretrained(model_name)
+    config = transformers.FalconConfig(
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        vocab_size=100,
+    )
     model = transformers.models.falcon.modeling_falcon.FalconDecoderLayer(config)
 
     with torchtrail.trace():
-        input_tensor = torch.rand((1, 64, 4544))
+        input_tensor = torch.rand((1, 64, config.hidden_size))
         attention_mask = torch.ones((1, 64), dtype=torch.long)
         output = model(input_tensor, alibi=None, attention_mask=attention_mask)
 
@@ -57,26 +61,18 @@ def test_falcon7b_instruct_with_kv_cache(
     tmp_path, show_modules, num_hidden_layers, num_tokens, use_cache
 ):
 
-    model_version = "tiiuae/falcon-7b-instruct"
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_version)
-
-    config = transformers.models.falcon.modeling_falcon.FalconConfig.from_pretrained(
-        model_version
+    config = transformers.FalconConfig(
+        hidden_size=32,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=4,
+        vocab_size=100,
     )
-    if num_hidden_layers is not None:
-        config.num_hidden_layers = num_hidden_layers
 
     model = transformers.models.falcon.modeling_falcon.FalconForCausalLM(
         config=config
     ).eval()
 
-    prompt_text = ["Display a graph of the falcon model"]
-
-    tokenized_inputs = tokenizer(
-        prompt_text, padding=False, add_special_tokens=False, return_tensors="pt"
-    )
-    input_tokens = tokenized_inputs["input_ids"]
+    input_tokens = torch.randint(0, config.vocab_size, (1, 1))
 
     def post_process(logits):
         next_token_logits = logits[:, -1, :]

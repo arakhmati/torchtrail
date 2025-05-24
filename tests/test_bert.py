@@ -8,8 +8,12 @@ import torchtrail
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_bert_attention(tmp_path, show_modules):
-    model_name = "google/bert_uncased_L-4_H-256_A-4"
-    config = transformers.BertConfig.from_pretrained(model_name)
+    config = transformers.BertConfig(
+        hidden_size=256,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        intermediate_size=1024,
+    )
     model = transformers.models.bert.modeling_bert.BertAttention(config).eval()
 
     with torchtrail.trace():
@@ -28,8 +32,13 @@ def test_bert_attention(tmp_path, show_modules):
 
 @pytest.mark.parametrize("show_modules", [True, False])
 def test_bert(tmp_path, show_modules):
-    model_name = "google/bert_uncased_L-4_H-256_A-4"
-    model = transformers.BertModel.from_pretrained(model_name).eval()
+    config = transformers.BertConfig(
+        hidden_size=256,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        intermediate_size=1024,
+    )
+    model = transformers.BertModel(config).eval()
 
     with torchtrail.trace():
         input_tensor = torch.randint(0, model.config.vocab_size, (1, 64))
