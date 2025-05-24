@@ -72,7 +72,7 @@ def test_module_list_with_multiple_traces():
     assert len(torchtrail.get_graph(output)) == 2
     assert len(torchtrail.get_graph(output, flatten=True)) == 13
 
-    ingored_output = module(
+    ignored_output = module(
         input_tensor
     )  # Output outside the context manager won't be traced
 
